@@ -30,6 +30,7 @@ object Config {
 
     const val CLAUDE_PACKAGE = "com.anthropic.claude"
     const val CHANNEL_REOPEN = "reopen"
+    const val CHANNEL_ANSWERS = "answers"
 }
 
 class App : Application() {
@@ -43,6 +44,11 @@ class App : Application() {
             NotificationChannel(Config.CHANNEL_REOPEN, "Recent conversation", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Tap to go back to the last conversation"
                 setShowBadge(false)
+            },
+        )
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(Config.CHANNEL_ANSWERS, "Answers that took a while", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "When a slow answer arrives after you left the panel"
             },
         )
     }

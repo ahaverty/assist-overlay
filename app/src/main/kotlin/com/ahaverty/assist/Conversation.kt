@@ -1,6 +1,7 @@
 package com.ahaverty.assist
 
 import android.Manifest
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -9,7 +10,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.util.Log
+import android.os.Handler
+import android.os.Looper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +33,9 @@ data class Msg(
 
 enum class Phase { Idle, Listening, Thinking, Speaking }
 
+/** Text going along with the next question: what was on screen, or something shared into the app. */
+data class Attachment(val label: String, val text: String, val shared: Boolean, val on: Boolean)
+
 data class UiState(
     val messages: List<Msg> = emptyList(),
     val phase: Phase = Phase.Idle,
@@ -39,19 +44,23 @@ data class UiState(
     val speakReplies: Boolean = true,
     val notice: String? = null,
     val showHistory: Boolean = false,
+    val attachment: Attachment? = null,
 )
+
+/** Words that point at the screen: the screen text goes along automatically when the question uses one. */
+private val POINTS_AT_SCREEN = Regex("""\b(this|these|screen|page|article|email|message|here|on my phone)\b""", RegexOption.IGNORE_CASE)
 
 /**
  * The one conversation, kept in the app process so it survives the overlay being hidden
- * (home, recents, opening another app) for [Config.KEEP_MS]. Only "New chat" or expiry clears it.
+ * (home, recents, opening another app) for [Config.KEEP_MS], and saved to [History] after every reply.
  */
-private const val TAG = "AssistConvo"
-
 class Conversation(private val app: Context, private val ha: Ha) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val main = Handler(Looper.getMainLooper())
     private val prefs = app.getSharedPreferences("ui", Context.MODE_PRIVATE)
     private val _state = MutableStateFlow(UiState(speakReplies = prefs.getBoolean("speak", true)))
     val state: StateFlow<UiState> = _state
+    private val feedback = Feedback(app)
 
     private var conversationId: String? = null
     private var lastActivity = 0L
@@ -67,14 +76,22 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private val _history = MutableStateFlow(store.load())
     val history: StateFlow<List<SavedChat>> = _history
 
+    /** True while the mic listens during a spoken reply, only to catch Alan talking over it. */
+    private var bargeIn = false
+    private var bargeRestarts = 0
+
     private val speech = Speech(
         app,
-        onPartial = { p -> _state.update { it.copy(partial = p) } },
-        onLevel = { l -> _state.update { it.copy(level = l) } },
-        onDone = { text, error -> onHeard(text, error) },
+        onPartial = { p -> onPartial(p) },
+        onLevel = { l -> if (!bargeIn) _state.update { it.copy(level = l) } },
+        onDone = { text, error -> onSpeechDone(text, error) },
     )
 
     private val busy get() = runJob?.isActive == true
+
+    var bargeInEnabled: Boolean
+        get() = prefs.getBoolean("barge_in", true)
+        set(v) = prefs.edit().putBoolean("barge_in", v).apply()
 
     // ---- overlay lifecycle --------------------------------------------------------------------------------------------
 
@@ -85,24 +102,23 @@ class Conversation(private val app: Context, private val ha: Ha) {
         when {
             !App.auth.loggedIn -> notice("Open the Assist app and sign in to Home Assistant first.")
             !hasMic() -> notice("Open the Assist app to allow the microphone.")
+            _state.value.attachment?.shared == true -> Unit // something was shared in: let Alan ask about it
             _state.value.phase == Phase.Idle -> listen()
         }
+        Updater.checkInBackground(app)
     }
 
     fun onHidden() {
         visible = false
-        if (speech.active) {
-            speech.cancel()
-            _state.update { it.copy(phase = if (busy) Phase.Thinking else Phase.Idle, partial = "", level = 0f) }
-        }
-        if (_state.value.messages.isNotEmpty()) postReopenNotice()
+        stopListening()
+        _state.update { if (it.attachment?.shared == false) it.copy(attachment = null) else it }
+        if (_state.value.messages.isNotEmpty()) postReopenNotice(alert = false)
     }
 
     /** The close button: stop talking and listening, keep the conversation for later. */
     fun close() {
-        speech.cancel()
+        stopListening()
         stopAudio()
-        _state.update { it.copy(phase = if (busy) Phase.Thinking else Phase.Idle, partial = "", level = 0f) }
     }
 
     fun newChat() {
@@ -113,24 +129,39 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private fun reset() {
         saveCurrent()
         chatId = newChatId()
-        speech.cancel()
+        stopListening()
         stopAudio()
         runJob?.cancel()
         runJob = null
         conversationId = null
         continueConversation = false
-        _state.update { UiState(speakReplies = it.speakReplies) }
+        _state.update { UiState(speakReplies = it.speakReplies, attachment = it.attachment?.takeIf { a -> a.shared }) }
         cancelReopenNotice()
     }
+
+    // ---- screen text and shared text ----------------------------------------------------------------------------------
+
+    fun setScreen(label: String, text: String) {
+        if (text.isBlank()) return
+        _state.update { if (it.attachment?.shared == true) it else it.copy(attachment = Attachment(label, text, shared = false, on = false)) }
+    }
+
+    fun share(label: String, text: String) {
+        _state.update { it.copy(attachment = Attachment(label, text, shared = true, on = true)) }
+    }
+
+    fun toggleAttachment() = _state.update { s -> s.copy(attachment = s.attachment?.let { it.copy(on = !it.on) }) }
+
+    fun dropAttachment() = _state.update { it.copy(attachment = null) }
 
     // ---- history ------------------------------------------------------------------------------------------------------
 
     fun showHistory(show: Boolean) {
         if (show) {
-            speech.cancel()
+            stopListening()
             saveCurrent()
         }
-        _state.update { it.copy(showHistory = show, phase = if (show && it.phase == Phase.Listening) Phase.Idle else it.phase, partial = "", level = 0f) }
+        _state.update { it.copy(showHistory = show) }
     }
 
     /** Reopen a saved chat. The next question carries the earlier exchange if HA has likely forgotten it. */
@@ -161,19 +192,35 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     private fun newChatId() = System.currentTimeMillis().toString(36) + (0..999).random()
 
+    // ---- what is sent -------------------------------------------------------------------------------------------------
+
     /**
-     * HA keeps a conversation's memory only a few minutes. After a gap, the earlier exchange is sent
-     * along with the question (the bridge treats a leading "(Context: ...)" as background).
+     * The text sent to HA for one question: a locked-phone mark for the bridge, then background context
+     * (the earlier exchange after a gap, screen or shared text), then the question itself.
      */
-    private fun withEarlierContext(text: String): String {
+    private fun outgoing(question: String): String {
+        val context = mutableListOf<String>()
         val earlier = _state.value.messages.filter { it.text.isNotBlank() && !it.error }
         val stale = needsContext || System.currentTimeMillis() - lastActivity > 4 * 60_000L
         needsContext = false
-        if (earlier.isEmpty() || !stale) return text
-        conversationId = null
-        val transcript = earlier.joinToString("\n") { (if (it.fromUser) "Me: " else "You: ") + speakable(it.text).replace("\n", " ") }
-            .takeLast(4000)
-        return "(Context: this continues our earlier conversation:\n$transcript)\n\n$text"
+        if (earlier.isNotEmpty() && stale) {
+            conversationId = null
+            val transcript = earlier.joinToString("\n") { (if (it.fromUser) "Me: " else "You: ") + speakable(it.text).replace("\n", " ") }
+            context += "this continues our earlier conversation:\n" + transcript.takeLast(4000)
+        }
+        _state.value.attachment?.let { a ->
+            if (a.on || (!a.shared && POINTS_AT_SCREEN.containsMatchIn(question))) {
+                context += (if (a.shared) "Alan shared this from ${a.label}" else "On Alan's screen, in ${a.label}") +
+                    ":\n" + a.text.take(6000)
+            }
+        }
+        _state.update { it.copy(attachment = null) }
+        val locked = app.getSystemService(KeyguardManager::class.java).isKeyguardLocked
+        return buildString {
+            if (locked) append(LOCK_MARK).append('\n')
+            if (context.isNotEmpty()) append("(Context: ").append(context.joinToString("\n\n")).append(")\n\n")
+            append(question)
+        }
     }
 
     // ---- input --------------------------------------------------------------------------------------------------------
@@ -198,41 +245,84 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     fun sendTyped(text: String) {
         if (text.isBlank()) return
-        speech.cancel()
+        stopListening()
         stopAudio()
-        send(text.trim(), voice = false)
+        send(text.trim(), spoken = false)
     }
 
     /** Typing started: drop the listening turn so the mic isn't open behind the keyboard. */
-    fun typingStarted() {
-        if (speech.active) {
-            speech.cancel()
-            _state.update { it.copy(phase = if (busy) Phase.Thinking else Phase.Idle, partial = "", level = 0f) }
-        }
-    }
+    fun typingStarted() = stopListening()
 
     private fun listen() {
         if (!hasMic()) return notice("Open the Assist app to allow the microphone.")
         stopAudio()
+        bargeIn = false
         _state.update { it.copy(phase = Phase.Listening, partial = "", notice = null) }
-        speech.start()
+        feedback.listening()
+        // A beat after the chime, so the chime isn't heard as speech.
+        main.postDelayed({ if (_state.value.phase == Phase.Listening && !speech.active) speech.start() }, 160)
     }
 
-    private fun onHeard(text: String?, error: String?) {
-        _state.update { it.copy(partial = "", level = 0f, phase = if (busy) Phase.Thinking else Phase.Idle) }
+    private fun stopListening() {
+        bargeIn = false
+        if (speech.active || _state.value.phase == Phase.Listening) {
+            speech.cancel()
+            _state.update { it.copy(phase = if (it.phase == Phase.Listening) (if (busy) Phase.Thinking else Phase.Idle) else it.phase, partial = "", level = 0f) }
+        }
+    }
+
+    private fun onPartial(p: String) {
+        if (!bargeIn) return _state.update { it.copy(partial = p) }
+        if (!isInterruption(p)) return
+        // Alan is talking over the reply: stop it and carry on with this as his next question.
+        bargeIn = false
+        stopAudio()
+        feedback.tick()
+        _state.update { it.copy(phase = Phase.Listening, partial = p, notice = null) }
+    }
+
+    private fun onSpeechDone(text: String?, error: String?) {
+        if (bargeIn) {
+            bargeIn = false
+            if (voice != null && visible && bargeRestarts < 15) {
+                bargeRestarts++
+                startBargeIn()
+            }
+            return
+        }
+        _state.update { it.copy(partial = "", level = 0f, phase = if (busy) Phase.Thinking else if (it.phase == Phase.Listening) Phase.Idle else it.phase) }
+        feedback.done()
         when {
-            text != null -> send(text, voice = true)
+            text != null -> send(text, spoken = true)
             error != null -> notice(error)
         }
     }
 
+    /** The reply's own voice comes back through the mic, so only words that aren't in the reply count. */
+    private fun isInterruption(heard: String): Boolean {
+        val words = heard.lowercase().split(Regex("[^a-z0-9']+")).filter { it.length > 1 }
+        if (words.isEmpty()) return false
+        if (words.first() in setOf("stop", "wait", "friday", "cancel", "hang", "hold")) return true
+        val reply = _state.value.messages.lastOrNull { !it.fromUser }?.text.orEmpty()
+        val spoken = speakable(reply).lowercase().split(Regex("[^a-z0-9']+")).toSet()
+        val unknown = words.count { it !in spoken }
+        return unknown >= 2 && unknown * 2 >= words.size
+    }
+
+    private fun startBargeIn() {
+        if (!bargeInEnabled || !visible || !hasMic() || speech.active) return
+        bargeIn = true
+        speech.start()
+    }
+
     // ---- a turn -------------------------------------------------------------------------------------------------------
 
-    private fun send(text: String, voice: Boolean) {
+    private fun send(text: String, spoken: Boolean) {
         runJob?.cancel()
-        val outgoing = withEarlierContext(text)
-        lastActivity = System.currentTimeMillis()
-        lastTurnWasVoice = voice
+        val sent = outgoing(text)
+        val started = System.currentTimeMillis()
+        lastActivity = started
+        lastTurnWasVoice = spoken
         continueConversation = false
         val replyId = nextId + 1
         _state.update {
@@ -244,11 +334,11 @@ class Conversation(private val app: Context, private val ha: Ha) {
             )
         }
         nextId += 2
-        val speaker = if (voice && _state.value.speakReplies) startVoice() else null
+        val speaker = if (spoken && _state.value.speakReplies) startVoice() else null
         runJob = scope.launch {
             val me = coroutineContext.job
             try {
-                ha.run(outgoing, conversationId).collect { ev ->
+                ha.run(sent, conversationId).collect { ev ->
                     when (ev) {
                         is PipeEvent.Delta -> {
                             edit(replyId) { it.copy(text = it.text + ev.text) }
@@ -278,11 +368,12 @@ class Conversation(private val app: Context, private val ha: Ha) {
                 speaker?.end()
                 edit(replyId) { it.copy(streaming = false) }
                 lastActivity = System.currentTimeMillis()
-                if (runJob === me) saveCurrent()
                 if (runJob === me) {
                     runJob = null
+                    saveCurrent()
                     _state.update { if (it.phase == Phase.Thinking) it.copy(phase = if (voice != null) Phase.Speaking else Phase.Idle) else it }
-                    if (!visible && _state.value.messages.isNotEmpty()) postReopenNotice()
+                    // A slow answer that lands while the panel is away gets a proper (sounding) notification.
+                    if (!visible) postReopenNotice(alert = lastActivity - started > 15_000)
                     if (voice == null) maybeContinue()
                 }
             }
@@ -309,10 +400,17 @@ class Conversation(private val app: Context, private val ha: Ha) {
         lateinit var v: ReplyVoice
         v = ReplyVoice(
             app, scope, ha,
-            onStarted = { if (voice === v) _state.update { if (it.phase == Phase.Thinking || it.phase == Phase.Idle) it.copy(phase = Phase.Speaking) else it } },
+            onStarted = {
+                if (voice === v) {
+                    _state.update { if (it.phase == Phase.Thinking || it.phase == Phase.Idle) it.copy(phase = Phase.Speaking) else it }
+                    bargeRestarts = 0
+                    startBargeIn()
+                }
+            },
             onFinished = {
                 if (voice === v) {
                     voice = null
+                    if (bargeIn) stopListening()
                     if (!busy) {
                         _state.update { if (it.phase == Phase.Speaking) it.copy(phase = Phase.Idle) else it }
                         maybeContinue()
@@ -328,6 +426,10 @@ class Conversation(private val app: Context, private val ha: Ha) {
         voice?.let {
             voice = null
             it.stop()
+        }
+        if (bargeIn) {
+            bargeIn = false
+            speech.cancel()
         }
         _state.update { if (it.phase == Phase.Speaking) it.copy(phase = if (busy) Phase.Thinking else Phase.Idle) else it }
     }
@@ -363,27 +465,26 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     // ---- "go back to it" notification ---------------------------------------------------------------------------------
 
-    private fun postReopenNotice() {
+    private fun postReopenNotice(alert: Boolean) {
         if (app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val last = _state.value.messages.lastOrNull { !it.fromUser && it.text.isNotBlank() }
         val body = when {
             busy -> "Still working on it…"
-            last != null -> last.text.trim().lines().last { it.isNotBlank() }
+            last != null -> speakable(last.text).lines().lastOrNull { it.isNotBlank() } ?: "Tap to see the reply"
             else -> "Tap to go back to the conversation"
         }
         val tap = PendingIntent.getBroadcast(
             app, 0, Intent(app, ReopenReceiver::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val n = Notification.Builder(app, Config.CHANNEL_REOPEN)
+        val n = Notification.Builder(app, if (alert) Config.CHANNEL_ANSWERS else Config.CHANNEL_REOPEN)
             .setSmallIcon(R.drawable.ic_launcher_fg)
-            .setContentTitle(Config.ASSISTANT_NAME)
+            .setContentTitle(if (alert) "${Config.ASSISTANT_NAME} answered" else Config.ASSISTANT_NAME)
             .setContentText(body)
             .setStyle(Notification.BigTextStyle().bigText(body))
             .setContentIntent(tap)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
-            .setTimeoutAfter(maxOf(1_000L, Config.KEEP_MS - (System.currentTimeMillis() - lastActivity)))
+            .setTimeoutAfter(maxOf(60_000L, Config.KEEP_MS - (System.currentTimeMillis() - lastActivity)))
             .build()
         app.getSystemService(NotificationManager::class.java).notify(1, n)
     }
@@ -391,4 +492,9 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private fun cancelReopenNotice() = app.getSystemService(NotificationManager::class.java).cancel(1)
 
     private fun hasMic() = app.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    companion object {
+        /** Tells the friday-voice bridge the phone was locked (it refuses door unlock and alarm disarm). */
+        const val LOCK_MARK = "[assist:locked]"
+    }
 }

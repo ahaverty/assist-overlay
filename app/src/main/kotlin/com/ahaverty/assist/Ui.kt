@@ -50,9 +50,12 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
@@ -148,6 +151,7 @@ fun AssistPanel(
                 } else {
                     Messages(state, onOpenUrl, Modifier.weight(1f, fill = false))
                     state.notice?.let { Notice(it, onDismiss = convo::clearNotice) }
+                    state.attachment?.let { AttachmentChip(it, onToggle = convo::toggleAttachment, onDrop = convo::dropAttachment) }
                     InputRow(state, convo)
                 }
             }
@@ -262,12 +266,30 @@ private fun UserBubble(text: String, live: Boolean = false) {
 @Composable
 private fun Reply(m: Msg, onOpenUrl: (String) -> Unit) {
     val linkColor = MaterialTheme.colorScheme.primary
-    val paragraphs = m.text.split("\n\n").map { it.trim() }.filter { it.isNotEmpty() }
+    // Paragraphs, with any ![name](ha:entity) line pulled out as its own picture/card block.
+    val paragraphs = m.text.split("\n\n").flatMap { para ->
+        val out = mutableListOf<String>()
+        val text = StringBuilder()
+        para.lines().forEach { line ->
+            if (HA_EMBED.matches(line.trim())) {
+                if (text.isNotBlank()) out += text.toString().trim()
+                text.clear()
+                out += line.trim()
+            } else {
+                text.append(line).append('\n')
+            }
+        }
+        if (text.isNotBlank()) out += text.toString().trim()
+        out
+    }.filter { it.isNotEmpty() }
     Column(Modifier.fillMaxWidth().padding(end = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (paragraphs.isEmpty() && m.streaming) TypingDots()
         paragraphs.forEachIndexed { i, p ->
+            val embed = HA_EMBED.matchEntire(p)
             val isStatus = p.endsWith("…") && p.length < 80 && !p.contains('\n')
-            if (isStatus) {
+            if (embed != null) {
+                Embed(embed.groupValues[1], embed.groupValues[2])
+            } else if (isStatus) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (m.streaming && i == paragraphs.lastIndex) {
                         CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
@@ -426,5 +448,29 @@ private fun ago(t: Long): String {
         mins < 24 * 60 -> "${mins / 60}h ago"
         mins < 48 * 60 -> "yesterday"
         else -> java.text.SimpleDateFormat("EEE d MMM", java.util.Locale.UK).format(java.util.Date(t))
+    }
+}
+
+/**
+ * What goes along with the next question. Screen text is off until tapped (it also goes along by itself
+ * when the question says "this", "page" and so on); shared text is on.
+ */
+@Composable
+private fun AttachmentChip(a: Attachment, onToggle: () -> Unit, onDrop: () -> Unit) {
+    Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        FilterChip(
+            selected = a.on,
+            onClick = onToggle,
+            label = {
+                Text(
+                    if (a.shared) "Shared from ${a.label}" else if (a.on) "Sending screen: ${a.label}" else "Use screen: ${a.label}",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+            leadingIcon = { Icon(if (a.shared) Icons.Filled.Share else Icons.Filled.Smartphone, contentDescription = null, modifier = Modifier.size(18.dp)) },
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        IconButton(onClick = onDrop) { Icon(Icons.Filled.Close, contentDescription = "Remove", modifier = Modifier.size(18.dp)) }
     }
 }

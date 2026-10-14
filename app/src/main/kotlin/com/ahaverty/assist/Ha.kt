@@ -109,6 +109,16 @@ class Ha(private val auth: Auth) {
         awaitClose { socket.cancel() }
     }
 
+    /** GET an HA API path with the user's token (states, history, camera snapshots). */
+    suspend fun get(path: String): ByteArray = withContext(Dispatchers.IO) {
+        val base = auth.base()
+        val token = auth.accessToken(base)
+        auth.http.newCall(Request.Builder().url(base + path).header("Authorization", "Bearer $token").build()).execute().use { r ->
+            if (!r.isSuccessful) throw IOException("$path ${r.code}")
+            r.body!!.bytes()
+        }
+    }
+
     /** A TTS clip for [message] in the pipeline's voice; HA renders it when the URL is fetched. */
     suspend fun ttsUrl(message: String): String = withContext(Dispatchers.IO) {
         val base = auth.base()

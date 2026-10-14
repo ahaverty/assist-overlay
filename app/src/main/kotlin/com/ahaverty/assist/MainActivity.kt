@@ -66,7 +66,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             AssistTheme {
                 Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxSize()) {
-                    var screen by remember { mutableStateOf("setup") }
+                    var screen by remember { mutableStateOf(if (intent?.action == ACTION_TRY) "try" else "setup") }
+                    androidx.compose.runtime.LaunchedEffect(Unit) {
+                        if (intent?.action == ACTION_TRY) App.convo.onShown()
+                        if (intent?.action == Updater.ACTION_INSTALL) installUpdate()
+                        Updater.checkInBackground(this@MainActivity, force = true)
+                    }
                     when (screen) {
                         "login" -> LoginScreen(onDone = { ok ->
                             screen = "setup"
@@ -94,6 +99,21 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == Updater.ACTION_INSTALL) installUpdate()
+    }
+
+    private fun installUpdate() {
+        if (!packageManager.canRequestPackageInstalls()) {
+            Toast.makeText(this, "Allow Assist to install updates, then tap the update again.", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, android.net.Uri.parse("package:$packageName")))
+            return
+        }
+        Updater.install(this) { Toast.makeText(this, it, Toast.LENGTH_SHORT).show() }
     }
 
     override fun onPause() {
@@ -145,8 +165,41 @@ class MainActivity : ComponentActivity() {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Toggle("Chime and buzz when listening", Feedback(this@MainActivity).enabled) { Feedback(this@MainActivity).enabled = it; refresh++ }
+            Toggle("Talk over a spoken reply to interrupt it", App.convo.bargeInEnabled) { App.convo.bargeInEnabled = it; refresh++ }
+            Text(
+                "Questions about \"this\" or \"this page\" send the screen's text along. That needs " +
+                    "Settings > Apps > Default apps > Digital assistant app > Use text from screen.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            var update by remember { mutableStateOf<String?>(null) }
+            val scope = rememberCoroutineScope()
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "Version ${packageManager.getPackageInfo(packageName, 0).versionName}" + (update?.let { " · $it" } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = {
+                    update = "checking…"
+                    scope.launch {
+                        val a = runCatching { Updater.check(this@MainActivity) }.getOrElse { update = "can't reach the PC (home Wi-Fi or WireGuard only)"; return@launch }
+                        if (a == null) update = "up to date" else { update = "${a.versionName} available"; installUpdate() }
+                    }
+                }) { Text("Check for update") }
+            }
             Spacer(Modifier.size(4.dp))
             Button(onClick = onTry, enabled = loggedIn, modifier = Modifier.fillMaxWidth()) { Text("Try it here") }
+        }
+    }
+
+    @Composable
+    private fun Toggle(title: String, on: Boolean, onChange: (Boolean) -> Unit) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            androidx.compose.material3.Switch(checked = on, onCheckedChange = onChange)
         }
     }
 
@@ -207,5 +260,9 @@ class MainActivity : ComponentActivity() {
                 },
             )
         }
+    }
+
+    companion object {
+        const val ACTION_TRY = "com.ahaverty.assist.TRY"
     }
 }

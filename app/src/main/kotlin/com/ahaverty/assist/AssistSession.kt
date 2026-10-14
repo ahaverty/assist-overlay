@@ -1,6 +1,8 @@
 package com.ahaverty.assist
 
+import android.app.assist.AssistStructure
 import android.content.Context
+import android.text.InputType
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -87,6 +89,30 @@ class AssistSession(context: Context) :
         App.convo.onHidden()
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         super.onHide()
+    }
+
+    /** What the app underneath shows (when "use text from screen" is on); it goes along with questions about "this". */
+    override fun onHandleAssist(state: AssistState) {
+        val structure = state.assistStructure ?: return
+        val pkg = structure.activityComponent?.packageName ?: return
+        if (pkg == context.packageName) return
+        val label = runCatching {
+            context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg, 0)).toString()
+        }.getOrDefault(pkg)
+        val lines = LinkedHashSet<String>()
+        state.assistContent?.webUri?.let { lines += "Address: $it" }
+        for (i in 0 until structure.windowNodeCount) collect(structure.getWindowNodeAt(i).rootViewNode, lines)
+        App.convo.setScreen(label, lines.joinToString("\n").take(8000))
+    }
+
+    private fun collect(node: AssistStructure.ViewNode, out: MutableSet<String>) {
+        if (out.sumOf { it.length } > 8000) return
+        val password = node.inputType and InputType.TYPE_MASK_VARIATION in setOf(
+            InputType.TYPE_TEXT_VARIATION_PASSWORD, InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD, InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+        )
+        val text = (node.text ?: node.contentDescription)?.toString()?.trim()
+        if (!password && !text.isNullOrEmpty() && text.length > 1) out += text
+        for (i in 0 until node.childCount) collect(node.getChildAt(i), out)
     }
 
     override fun onBackPressed() {

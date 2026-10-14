@@ -24,6 +24,7 @@ import kotlin.math.sqrt
 
 private const val TAG = "AssistWhisper"
 private const val RATE = 16_000
+private const val LIVE = "AssistLive"
 
 /**
  * One listening turn with Whisper. The app records the mic itself and decides when Alan has finished:
@@ -69,6 +70,17 @@ class WhisperSpeech(
     private var draftDone = 0 // samples [draft] covers
     private var draftGoogle = "" // Google's words when the draft's audio was taken
     @Volatile private var lastSpeechSample = 0
+    private var t0 = 0L
+    private var replaying = false
+
+    /** Everything the live words do, for replaying a turn over adb (logcat tag AssistLive). */
+    private fun live(msg: String) = Log.d(LIVE, "+${SystemClock.elapsedRealtime() - t0} $msg")
+
+    private fun show() {
+        val d = display()
+        live("show: $d")
+        onPartial(d)
+    }
 
     /** Whisper's draft, then whatever Google has heard since it was taken (minus any words both have). */
     private fun display(): String {
@@ -78,9 +90,12 @@ class WhisperSpeech(
 
     val active: Boolean get() = !finished
 
-    /** [holdToTalk]: keep listening through any pause until [stop] (the mic button was let go). */
+    /**
+     * [holdToTalk]: keep listening through any pause until [stop] (the mic button was let go).
+     * [replay]: play these samples in real time instead of the mic (adb testing, see [ReplayReceiver]).
+     */
     @SuppressLint("MissingPermission")
-    fun start(holdToTalk: Boolean = false) {
+    fun start(holdToTalk: Boolean = false, replay: ShortArray? = null) {
         cancel()
         finished = false
         cancelled = false
@@ -94,6 +109,24 @@ class WhisperSpeech(
         draftSnap = 0
         draftGoogle = ""
         lastSpeechSample = 0
+        t0 = SystemClock.elapsedRealtime()
+        replaying = replay != null
+        if (replay != null) {
+            recording = true
+            startPreviewSegment()
+            var pos = 0
+            val read = { buf: ShortArray ->
+                SystemClock.sleep(20)
+                // Then quiet, as a mic would hear, until the pause ends the turn.
+                val n = minOf(buf.size, replay.size - pos).coerceAtLeast(0)
+                System.arraycopy(replay, pos, buf, 0, n)
+                buf.fill(0, n, buf.size)
+                pos += n
+                buf.size
+            }
+            thread = Thread({ capture(read) {} }, "assist-replay").also { it.start() }
+            return
+        }
         val minBuf = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val rec = try {
             AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, RATE))
@@ -107,7 +140,7 @@ class WhisperSpeech(
         recording = true
         startPreviewSegment()
         rec.startRecording()
-        thread = Thread({ capture(rec) }, "assist-mic").also { it.start() }
+        thread = Thread({ capture({ rec.read(it, 0, it.size) }) { runCatching { rec.stop() }; rec.release() } }, "assist-mic").also { it.start() }
     }
 
     /** Stop listening and transcribe what was heard. */
@@ -127,7 +160,7 @@ class WhisperSpeech(
         closeSegment()
     }
 
-    private fun capture(rec: AudioRecord) {
+    private fun capture(read: (ShortArray) -> Int, close: () -> Unit) {
         val chunk = ShortArray(RATE / 50) // 20 ms
         val bytes = ByteArray(chunk.size * 2)
         var noise = 300.0
@@ -137,7 +170,7 @@ class WhisperSpeech(
         var lastDraftAt = started
         try {
             while (recording) {
-                val n = rec.read(chunk, 0, chunk.size)
+                val n = read(chunk)
                 if (n <= 0) continue
                 samples.append(chunk, n)
                 var sum = 0.0
@@ -175,8 +208,7 @@ class WhisperSpeech(
                 }
             }
         } finally {
-            runCatching { rec.stop() }
-            rec.release()
+            close()
             main.post { captured(speechMs >= 200) }
         }
     }
@@ -191,15 +223,17 @@ class WhisperSpeech(
         // Taken with the audio, not when Whisper is done: words said while it works are not in the draft.
         // Google may still be a word behind here; display() drops any words the two then both have.
         val googleThen = shown
+        live("draft start ${audio.size / RATE.toFloat()} s")
         draftJob = scope.launch {
             val text = runCatching { Whisper.transcribe(context, model(), audio) }
                 .onFailure { Log.w(TAG, "draft failed", it) }
                 .getOrNull()?.takeIf { it.isNotBlank() } ?: return@launch
+            live("draft: $text")
             if (t != turn || finished) return@launch
             draft = text
             draftDone = audio.size
             draftGoogle = googleThen
-            onPartial(display())
+            show()
         }
     }
 
@@ -209,6 +243,7 @@ class WhisperSpeech(
         onLevel(0f)
         if (finished) return
         if (!heardSpeech && fallback.isBlank()) return finish(null, null)
+        if (!replaying) keepTurn(samples.toShorts())
         val audio = samples.toFloats()
         // The last draft already heard everything said (only the closing quiet came after it): use it.
         val drafted = draftJob?.takeIf { draftSnap >= lastSpeechSample }
@@ -228,8 +263,19 @@ class WhisperSpeech(
 
     private fun finish(text: String?, error: String?) {
         if (cancelled) return
+        live("done: $text")
         finished = true
         onDone(text, error)
+    }
+
+    /** The last few turns' audio stay on the phone (files/turns), so a bad one can be replayed over adb. */
+    private fun keepTurn(pcm: ShortArray) = scope.launch(Dispatchers.IO) {
+        runCatching {
+            val dir = java.io.File(context.getExternalFilesDir(null), "turns").apply { mkdirs() }
+            val name = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+            writeWav(java.io.File(dir, "$name.wav"), pcm)
+            dir.listFiles()!!.sortedByDescending { it.name }.drop(KEEP_TURNS).forEach { it.delete() }
+        }.onFailure { Log.w(TAG, "couldn't keep the turn", it) }
     }
 
     // ---- live words: the same audio, fed to Google's recognizer through a pipe ----------------------------------------
@@ -276,6 +322,7 @@ class WhisperSpeech(
             override fun onPartialResults(partialResults: android.os.Bundle?) {
                 if (recognizer !== r) return
                 partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() }?.let {
+                    live("g$segments partial: $it")
                     // After a pause Google sometimes starts a new utterance in the same session without
                     // ending the old one: keep the old words instead of letting the new ones replace them.
                     // If it then goes back to the whole utterance, that was only a revision: un-keep them.
@@ -289,17 +336,18 @@ class WhisperSpeech(
                         committed = LiveWords.merge(committed, segment)
                     }
                     segment = it
-                    onPartial(display())
+                    show()
                 }
             }
 
             override fun onResults(results: android.os.Bundle?) {
                 if (recognizer !== r) return
+                live("g$segments final: ${results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()}")
                 endSegment(results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() })
             }
 
             override fun onError(error: Int) {
-                Log.d(TAG, "preview error $error")
+                live("g$segments error $error")
                 endSegment(null)
             }
         })
@@ -330,6 +378,24 @@ class WhisperSpeech(
     }
 
     companion object {
+        const val KEEP_TURNS = 8
+
+        fun writeWav(file: java.io.File, pcm: ShortArray) {
+            val b = java.nio.ByteBuffer.allocate(44 + pcm.size * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            b.put("RIFF".toByteArray()).putInt(36 + pcm.size * 2).put("WAVEfmt ".toByteArray())
+                .putInt(16).putShort(1).putShort(1).putInt(RATE).putInt(RATE * 2).putShort(2).putShort(16)
+                .put("data".toByteArray()).putInt(pcm.size * 2)
+            pcm.forEach { b.putShort(it) }
+            file.writeBytes(b.array())
+        }
+
+        /** 16 kHz mono 16-bit WAV (a plain 44-byte header). */
+        fun readWav(file: java.io.File): ShortArray {
+            val bytes = file.readBytes()
+            val b = java.nio.ByteBuffer.wrap(bytes, 44, bytes.size - 44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            return ShortArray((bytes.size - 44) / 2) { b.short }
+        }
+
         /** Quiet that ends a turn when not holding the button: long enough for a breath mid-sentence. */
         const val PAUSE_MS = 2200
 
@@ -363,4 +429,32 @@ private class ShortArrayBuilder {
     }
 
     @Synchronized fun toFloats() = FloatArray(size) { data[it] / 32768f }
+
+    @Synchronized fun toShorts() = data.copyOf(size)
+}
+
+/**
+ * `adb shell am broadcast -n com.ahaverty.assist/.ReplayReceiver --es file turns/<name>.wav` plays a recorded
+ * turn (or any 16 kHz mono WAV in the app's files) through the live words in real time, with no mic and no
+ * question sent. Every Google partial, Whisper draft and shown text goes to logcat (tag AssistLive).
+ */
+class ReplayReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val file = java.io.File(context.getExternalFilesDir(null), intent.getStringExtra("file") ?: "replay.wav")
+        val pcm = runCatching { WhisperSpeech.readWav(file) }.getOrNull()
+            ?: return run { Log.w(LIVE, "can't read $file") }
+        Log.d(LIVE, "replay ${file.name}: ${pcm.size / RATE.toFloat()} s")
+        running?.cancel()
+        running = WhisperSpeech(
+            context.applicationContext,
+            model = { Whisper.Model.SMALL },
+            onPartial = {},
+            onLevel = {},
+            onDone = { text, error -> Log.d(LIVE, "replay done: $text ${error.orEmpty()}") },
+        ).also { it.start(holdToTalk = intent.getBooleanExtra("hold", false), replay = pcm) }
+    }
+
+    companion object {
+        private var running: WhisperSpeech? = null
+    }
 }

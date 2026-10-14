@@ -92,6 +92,12 @@
             android:exported="true"
             android:permission="android.permission.DUMP" />
 
+        <!-- adb only: replay a recorded turn through the live words (see ReplayReceiver). -->
+        <receiver
+            android:name=".ReplayReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
         <!-- adb only: copy settings onto the phone (see ConfigReceiver). -->
         <receiver
             android:name=".ConfigReceiver"

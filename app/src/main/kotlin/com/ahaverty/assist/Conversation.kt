@@ -317,8 +317,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
             context += "this continues our earlier conversation:\n" + transcript.takeLast(4000)
         }
         _state.value.attachment?.let { a ->
-            // Only when the screenshot button was tapped (or text was shared in), never guessed from the words.
-            if (a.on) {
+            // The screenshot button was tapped, text was shared in, or the question clearly asks about the screen.
+            if (a.on || (!a.shared && ScreenIntent.pointsAtScreen(question))) {
                 context += Setup.userName.ifEmpty { "The user" }.let { who ->
                     if (a.shared) "$who shared this from ${a.label}" else "On $who's screen, in ${a.label}"
                 } +

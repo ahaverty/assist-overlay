@@ -84,6 +84,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -211,7 +212,11 @@ private fun Header(
         Column(Modifier.weight(1f)) {
             Text(if (state.showHistory) "Recent chats" else Config.ASSISTANT_NAME, style = MaterialTheme.typography.titleMedium)
             val status = when (state.phase) {
-                Phase.Listening -> if (state.transcribing) "Transcribing…" else "Listening…"
+                Phase.Listening -> when {
+                    state.transcribing -> "Transcribing…"
+                    state.holding -> "Listening until you let go…"
+                    else -> "Listening…"
+                }
                 Phase.Thinking -> "Thinking…"
                 Phase.Speaking -> "Speaking"
                 Phase.Idle -> null
@@ -411,14 +416,15 @@ private fun InputRow(state: UiState, convo: Conversation) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
             }
         } else {
-            MicButton(state, onClick = convo::micPressed)
+            MicButton(state, onClick = convo::micPressed, onHoldStart = convo::holdStart, onHoldEnd = convo::holdEnd)
         }
     }
 }
 
 @Composable
-private fun MicButton(state: UiState, onClick: () -> Unit) {
+private fun MicButton(state: UiState, onClick: () -> Unit, onHoldStart: () -> Unit, onHoldEnd: () -> Unit) {
     val listening = state.phase == Phase.Listening
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val ring by animateFloatAsState(if (listening) 1f + state.level * 0.35f else 1f, tween(90), label = "ring")
     Box(contentAlignment = Alignment.Center, modifier = Modifier.size(64.dp)) {
         AnimatedVisibility(listening, enter = fadeIn() + slideInVertically { it / 4 }, exit = fadeOut()) {
@@ -427,12 +433,29 @@ private fun MicButton(state: UiState, onClick: () -> Unit) {
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
             )
         }
-        FilledIconButton(
-            onClick = onClick,
-            modifier = Modifier.size(56.dp),
-            colors = if (listening) IconButtonDefaults.filledIconButtonColors()
-            else IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer),
+        // Tap: talk (stops by itself at a pause). Hold: walkie-talkie, listens until you let go.
+        val bg = if (listening) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer
+        val fg = if (listening) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onPrimaryContainer
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.size(if (state.holding) 64.dp else 56.dp).clip(CircleShape).background(bg)
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onPress = {
+                            var held = false
+                            val timer = scope.launch {
+                                kotlinx.coroutines.delay(350)
+                                held = true
+                                onHoldStart()
+                            }
+                            val released = tryAwaitRelease()
+                            timer.cancel()
+                            if (held) onHoldEnd() else if (released) onClick()
+                        },
+                    )
+                },
         ) {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides fg) {
             Icon(
                 when (state.phase) {
                     Phase.Listening -> Icons.Filled.GraphicEq
@@ -442,9 +465,10 @@ private fun MicButton(state: UiState, onClick: () -> Unit) {
                 contentDescription = when (state.phase) {
                     Phase.Listening -> "Done talking"
                     Phase.Speaking -> "Stop speaking and listen"
-                    else -> "Talk"
+                    else -> "Talk, or hold to talk until you let go"
                 },
             )
+            }
         }
     }
 }

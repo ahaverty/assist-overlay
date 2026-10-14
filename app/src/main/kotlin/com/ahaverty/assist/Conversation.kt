@@ -46,6 +46,7 @@ data class UiState(
     val showHistory: Boolean = false,
     val attachment: Attachment? = null,
     val transcribing: Boolean = false,
+    val holding: Boolean = false,
 )
 
 /** Words that point at the screen: the screen text goes along automatically when the question uses one. */
@@ -289,6 +290,26 @@ class Conversation(private val app: Context, private val ha: Ha) {
         send(text.trim(), spoken = false)
     }
 
+    /** Hold-to-talk: listen through any pause until [holdEnd]. Uses Whisper when it is on the phone. */
+    fun holdStart() {
+        stopListening()
+        stopAudio()
+        if (!hasMic()) return notice("Open the Assist app to allow the microphone.")
+        _state.update { it.copy(phase = Phase.Listening, partial = "", notice = null, holding = true) }
+        feedback.listening()
+        main.postDelayed({
+            if (_state.value.holding && !micBusy) {
+                if (Whisper.ready(app, Whisper.Model.SMALL)) whisper.start(holdToTalk = true) else speech.start()
+            }
+        }, 160)
+    }
+
+    fun holdEnd() {
+        _state.update { it.copy(holding = false) }
+        whisper.stop()
+        speech.stop()
+    }
+
     /** Typing started: drop the listening turn so the mic isn't open behind the keyboard. */
     fun typingStarted() = stopListening()
 
@@ -311,7 +332,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         if (micBusy || _state.value.phase == Phase.Listening) {
             speech.cancel()
             whisper.cancel()
-            _state.update { it.copy(phase = if (it.phase == Phase.Listening) (if (busy) Phase.Thinking else Phase.Idle) else it.phase, partial = "", level = 0f, transcribing = false) }
+            _state.update { it.copy(phase = if (it.phase == Phase.Listening) (if (busy) Phase.Thinking else Phase.Idle) else it.phase, partial = "", level = 0f, transcribing = false, holding = false) }
         }
     }
 
@@ -334,7 +355,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
             }
             return
         }
-        _state.update { it.copy(partial = "", level = 0f, transcribing = false, phase = if (busy) Phase.Thinking else if (it.phase == Phase.Listening) Phase.Idle else it.phase) }
+        _state.update { it.copy(partial = "", level = 0f, transcribing = false, holding = false, phase = if (busy) Phase.Thinking else if (it.phase == Phase.Listening) Phase.Idle else it.phase) }
         if (text != null) feedback.heard() else feedback.nothing()
         when {
             text != null -> send(text, spoken = true)

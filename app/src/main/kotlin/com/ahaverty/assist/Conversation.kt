@@ -240,7 +240,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private fun outgoing(question: String): String {
         val context = mutableListOf<String>()
         val earlier = _state.value.messages.filter { it.text.isNotBlank() && !it.error }
-        val stale = needsContext || System.currentTimeMillis() - lastActivity > 4 * 60_000L
+        // No conversation id (an earlier turn was cut short before HA gave one) means HA would start afresh too.
+        val stale = needsContext || conversationId == null || System.currentTimeMillis() - lastActivity > 4 * 60_000L
         needsContext = false
         if (earlier.isNotEmpty() && stale) {
             conversationId = null

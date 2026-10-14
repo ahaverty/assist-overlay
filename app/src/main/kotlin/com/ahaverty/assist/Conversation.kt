@@ -594,6 +594,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
         runCatching {
             onStartActivity?.invoke(intent) ?: app.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
+        // The panel sits above the unlock screen (Alan had to swipe it away), so it steps aside; unlockFinished brings it back.
+        if (visible) main.postDelayed({ onLeave?.invoke() }, 250)
         // Even if the unlock screen didn't come up, unlocking the phone the normal way still confirms.
         return PhoneActions.Result(true, "Unlock your phone to confirm")
     }

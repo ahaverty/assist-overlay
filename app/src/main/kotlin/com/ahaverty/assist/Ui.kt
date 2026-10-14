@@ -50,8 +50,10 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.sign
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.History
@@ -146,17 +148,27 @@ fun AssistPanel(
     val state by convo.state.collectAsState()
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxPanel = maxHeight * 0.82f
-        // Tucking by swipe only starts on the header and needs a long, deliberate drag; short ones spring back.
+        // Fling the whole panel left or right to tuck it into that edge. Scrolling the messages, buttons and
+        // anything that scrolls sideways keep their own gestures; a slow drag needs to go 40% of the way.
         val widthPx = constraints.maxWidth.toFloat()
         val drag = remember { Animatable(0f) }
         val dragScope = rememberCoroutineScope()
         val swipeToTuck = if (onTuck == null) Modifier else Modifier.pointerInput(onTuck) {
+            val tracker = VelocityTracker()
+            val flingSpeed = 900.dp.toPx()
+            val flingMin = 40.dp.toPx()
             detectHorizontalDragGestures(
+                onDragStart = { tracker.resetTracking() },
                 onDragEnd = {
                     val x = drag.value
-                    if (abs(x) > widthPx * 0.4f) {
-                        onTuck(x < 0)
-                        dragScope.launch { drag.snapTo(0f) }
+                    val v = tracker.calculateVelocity().x
+                    val flung = abs(v) > flingSpeed && abs(x) > flingMin && sign(v) == sign(x)
+                    if (flung || abs(x) > widthPx * 0.4f) {
+                        dragScope.launch {
+                            drag.animateTo(sign(x) * widthPx, tween(120))
+                            onTuck(x < 0)
+                            drag.snapTo(0f)
+                        }
                     } else {
                         dragScope.launch { drag.animateTo(0f) }
                     }
@@ -164,6 +176,7 @@ fun AssistPanel(
                 onDragCancel = { dragScope.launch { drag.animateTo(0f) } },
             ) { change, dx ->
                 change.consume()
+                tracker.addPosition(change.uptimeMillis, change.position)
                 dragScope.launch { drag.snapTo(drag.value + dx) }
             }
         }
@@ -182,10 +195,10 @@ fun AssistPanel(
             tonalElevation = 3.dp,
             shadowElevation = 12.dp,
         ) {
-            Column(Modifier.padding(top = 8.dp, bottom = 12.dp)) {
+            Column(swipeToTuck.padding(top = 8.dp, bottom = 12.dp)) {
                 Header(
                     state,
-                    modifier = swipeToTuck,
+                    modifier = Modifier,
                     onClose = onClose,
                     onTuck = onTuck,
                     onNew = convo::newChat,

@@ -222,7 +222,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
         runJob = null
         conversationId = null
         continueConversation = false
-        _state.update { UiState(speakReplies = it.speakReplies, attachment = it.attachment?.takeIf { a -> a.shared }) }
+        // The screen (or shared text) belongs to this showing, not the old chat: a new chat still gets the screenshot button.
+        _state.update { UiState(speakReplies = it.speakReplies, attachment = it.attachment) }
         cancelReopenNotice()
     }
 
@@ -246,6 +247,9 @@ class Conversation(private val app: Context, private val ha: Ha) {
         _state.update { s -> s.copy(attachment = s.attachment?.copy(on = true)) }
         if (visible && _state.value.phase == Phase.Idle && App.auth.loggedIn && hasMic()) listen()
     }
+
+    /** The screenshot button when Android passed no screen (a secure app, or screen text off): say so rather than hide it. */
+    fun noScreen() = notice("Android didn't pass this screen. Check \"Use text from screen\" is on, and some apps block it.")
 
     fun share(label: String, text: String) {
         _state.update { it.copy(attachment = Attachment(label, text, shared = true, on = true)) }
@@ -322,7 +326,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
                 sentScreen = a.label
             }
         }
-        _state.update { it.copy(attachment = null) }
+        // Shared text goes once; the screen stays for follow-ups, its button back to unpressed.
+        _state.update { it.copy(attachment = it.attachment?.takeIf { a -> !a.shared }?.copy(on = false)) }
         val locked = app.getSystemService(KeyguardManager::class.java).isKeyguardLocked
         return buildString {
             if (locked) append(LOCK_MARK).append('\n')

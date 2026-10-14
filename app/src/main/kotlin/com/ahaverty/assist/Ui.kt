@@ -554,8 +554,9 @@ private fun InputRow(
                 typed = it
             },
             placeholder = { Text(if (screen?.on == true) "Ask about this screen" else "Ask ${Setup.assistantName}", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            trailingIcon = if (screen == null) null else {
-                { ScreenButton(screen, onGrab = { button -> convo.grabScreen(); onGrab?.invoke(button, screen.shot) }, onDrop = convo::dropAttachment) }
+            trailingIcon = {
+                if (screen == null) NoScreenButton(convo::noScreen)
+                else ScreenButton(screen, onGrab = { button -> convo.grabScreen(); onGrab?.invoke(button, screen.shot) }, onDrop = convo::toggleAttachment)
             },
             modifier = Modifier.weight(1f),
             shape = RoundedCornerShape(26.dp),
@@ -708,6 +709,14 @@ private fun ScreenButton(a: Attachment, onGrab: (LayoutCoordinates) -> Unit, onD
                 else Icon(Icons.Filled.Smartphone, contentDescription = label, modifier = Modifier.size(16.dp))
             }
         }
+    }
+}
+
+/** The screenshot button, dimmed, while Android hasn't passed the screen: it stays in the text bar either way. */
+@Composable
+private fun NoScreenButton(onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        Icon(Icons.Filled.Screenshot, contentDescription = "Screen not available", tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f))
     }
 }
 

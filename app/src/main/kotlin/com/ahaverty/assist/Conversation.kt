@@ -5,10 +5,12 @@ import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
@@ -589,27 +591,49 @@ class Conversation(private val app: Context, private val ha: Ha) {
             return PhoneActions.Result(true, "Phone unlocked, confirming")
         }
         pendingConfirm = then
+        watchUserPresent()
         val intent = Intent(app, UnlockActivity::class.java)
-        val shown = runCatching {
+        runCatching {
             onStartActivity?.invoke(intent) ?: app.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
-        if (shown.isFailure) {
-            pendingConfirm = null
-            return PhoneActions.Result(false, "Couldn't show the unlock screen")
-        }
+        // Even if the unlock screen didn't come up, unlocking the phone the normal way still confirms.
         return PhoneActions.Result(true, "Unlock your phone to confirm")
     }
 
-    /** From [UnlockActivity]: the phone was unlocked (send the yes) or the unlock screen was dismissed (do nothing). */
+    /**
+     * From [UnlockActivity], or any unlock of the phone (USER_PRESENT) within [CONFIRM_MS]: the phone was unlocked,
+     * so send the yes and bring the panel back. A dismissed unlock screen keeps waiting for a normal unlock.
+     */
     fun unlockFinished(ok: Boolean) {
         val then = pendingConfirm ?: return
-        pendingConfirm = null
         if (!ok) {
-            notice("Phone not unlocked, so nothing was done")
+            notice("Unlock your phone within 2 minutes to confirm")
             return
         }
+        pendingConfirm = null
+        stopWatchingUserPresent()
         if (!visible) reopenAssist(app)
         sendConfirmed(then)
+    }
+
+    private var userPresent: BroadcastReceiver? = null
+    private val confirmExpired = Runnable {
+        pendingConfirm = null
+        stopWatchingUserPresent()
+    }
+
+    private fun watchUserPresent() {
+        stopWatchingUserPresent()
+        userPresent = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) = unlockFinished(true)
+        }.also { app.registerReceiver(it, IntentFilter(Intent.ACTION_USER_PRESENT), Context.RECEIVER_NOT_EXPORTED) }
+        main.postDelayed(confirmExpired, CONFIRM_MS)
+    }
+
+    private fun stopWatchingUserPresent() {
+        main.removeCallbacks(confirmExpired)
+        userPresent?.let { runCatching { app.unregisterReceiver(it) } }
+        userPresent = null
     }
 
     private fun sendConfirmed(then: String) {
@@ -737,5 +761,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         const val LOCK_MARK = "[assist:locked]"
         /** The phone was just unlocked to confirm a door unlock or disarm asked while locked (the bridge takes it as yes). */
         const val UNLOCKED_MARK = "[assist:unlocked]"
+        /** How long an unlock still counts as confirming (the proxy keeps the pending door unlock for 5 minutes). */
+        const val CONFIRM_MS = 120_000L
     }
 }

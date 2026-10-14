@@ -100,17 +100,13 @@ class Conversation(private val app: Context, private val ha: Ha) {
         onTranscribing = { _state.update { it.copy(transcribing = true, level = 0f) } },
     )
 
-    /** "google", "small" or "turbo". */
+    /** "google" or "small" (on-phone Whisper; an old "turbo" choice also means Whisper). */
     var sttEngine: String
-        get() = prefs.getString("stt", "google") ?: "google"
+        get() = if (prefs.getString("stt", "google") == "google") "google" else "small"
         set(v) = prefs.edit().putString("stt", v).apply()
 
     private val whisperModel: Whisper.Model?
-        get() = when (sttEngine) {
-            "small" -> Whisper.Model.SMALL
-            "turbo" -> Whisper.Model.TURBO
-            else -> null
-        }?.takeIf { Whisper.ready(app, it) }
+        get() = (if (sttEngine == "google") null else Whisper.Model.SMALL)?.takeIf { Whisper.ready(app, it) }
 
     private val micBusy get() = speech.active || whisper.active
 

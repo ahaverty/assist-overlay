@@ -19,8 +19,8 @@ android {
         applicationId = "com.ahaverty.assist"
         minSdk = 31
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.9"
+        versionCode = 101
+        versionName = "1.1"
         ndk {
             abiFilters += "arm64-v8a"
         }

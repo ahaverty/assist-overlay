@@ -213,10 +213,9 @@ class MainActivity : ComponentActivity() {
         Text("Speech recognition", style = MaterialTheme.typography.titleMedium)
         val options = listOf(Triple("google", "Google", "Live words, fastest. ${Speech.recognizerLabel(this@MainActivity)}")) +
             Whisper.Model.entries.map { m ->
-                val key = if (m == Whisper.Model.SMALL) "small" else "turbo"
+                val key = "small"
                 val state = when {
-                    Whisper.ready(this@MainActivity, m) -> "On the phone. " + (getSharedPreferences("ui", MODE_PRIVATE).getString("whisper_last_${m.name}", null)
-                        ?: if (m == Whisper.Model.SMALL) "Quick." else "Most accurate, a bit slower.")
+                    Whisper.ready(this@MainActivity, m) -> "On the phone, more accurate. " + (getSharedPreferences("ui", MODE_PRIVATE).getString("whisper_last_${m.name}", null) ?: "")
                     progress[m] != null -> "Downloading ${(progress[m]!! * 100).toInt()}%…"
                     else -> "${m.mb} MB download from the PC (home Wi-Fi or WireGuard)."
                 }
@@ -226,7 +225,7 @@ class MainActivity : ComponentActivity() {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().clickable {
-                    val m = when (key) { "small" -> Whisper.Model.SMALL; "turbo" -> Whisper.Model.TURBO; else -> null }
+                    val m = if (key == "small") Whisper.Model.SMALL else null
                     if (m != null && !Whisper.ready(this@MainActivity, m)) {
                         if (progress[m] != null) return@clickable
                         progress[m] = 0f

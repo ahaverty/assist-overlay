@@ -75,6 +75,11 @@
             android:name=".InstallStatusReceiver"
             android:exported="false" />
 
+        <receiver
+            android:name=".BenchReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+
         <!-- "Share to Assist": text and links from any app ride along with the next question. -->
         <activity
             android:name=".ShareActivity"

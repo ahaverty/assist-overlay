@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 export JAVA_HOME="C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot"
-./gradlew assembleRelease --console=plain -q 2>&1 | grep -v "^w: " || true
+./gradlew assembleRelease --console=plain -q -Pkotlin.compiler.execution.strategy=in-process 2>&1 | grep -v "^w: " || true
 apk=app/build/outputs/apk/release/app-release.apk
 code=$(python -c "import re;print(re.search(r'versionCode = (\d+)', open('app/build.gradle.kts').read())[1])")
 name=$(python -c "import re;print(re.search(r'versionName = \"([^\"]+)', open('app/build.gradle.kts').read())[1])")

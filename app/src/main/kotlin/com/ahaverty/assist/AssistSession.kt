@@ -45,10 +45,17 @@ class AssistSession(context: Context) :
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         window.window?.let {
             WindowCompat.setDecorFitsSystemWindows(it, false)
-            // The panel lifts itself with imePadding(). Resizing the window too would count the
-            // keyboard twice and float the panel a keyboard's height above it.
-            it.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         }
+        keepWindowStill()
+    }
+
+    /**
+     * The panel lifts itself with imePadding(). If the window also pans (the system's default for this
+     * window, which comes back after onCreate) the keyboard is counted twice and the panel floats a
+     * keyboard's height above it, so this is set again every time the overlay shows.
+     */
+    private fun keepWindowStill() {
+        window.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
     }
 
     override fun onCreateContentView(): View = ComposeView(context).apply {
@@ -91,6 +98,7 @@ class AssistSession(context: Context) :
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        keepWindowStill()
         lifecycleRegistry.currentState = Lifecycle.State.RESUMED
         App.convo.onShown()
     }

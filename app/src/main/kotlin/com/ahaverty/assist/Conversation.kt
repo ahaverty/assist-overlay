@@ -300,6 +300,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
      */
     fun holdStart() {
         val s = _state.value
+        // Already mid-sentence: no chime (it sounds like a restart), just a tick, and the mic picks up at once.
+        val carryingOn = s.phase == Phase.Listening && !s.holding
         carry = when {
             s.phase == Phase.Listening && !s.holding -> s.partial.trim()
             s.phase == Phase.Thinking && lastTurnWasVoice && System.currentTimeMillis() - lastActivity < Config.TAKE_BACK_MS -> takeBackLast()
@@ -309,12 +311,12 @@ class Conversation(private val app: Context, private val ha: Ha) {
         stopAudio()
         if (!hasMic()) return notice("Open the Assist app to allow the microphone.")
         _state.update { it.copy(phase = Phase.Listening, partial = carry, notice = null, holding = true) }
-        feedback.listening()
+        if (carryingOn || carry.isNotEmpty()) feedback.tick() else feedback.listening()
         main.postDelayed({
             if (_state.value.holding && !micBusy) {
                 if (Whisper.ready(app, Whisper.Model.SMALL)) whisper.start(holdToTalk = true) else speech.start()
             }
-        }, 160)
+        }, if (carryingOn || carry.isNotEmpty()) 0L else 160L)
     }
 
     fun holdEnd() {

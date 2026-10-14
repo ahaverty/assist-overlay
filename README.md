@@ -36,9 +36,10 @@ so that domain never has to exist.
 
 ## Build and release
 
-GitHub Actions (`.github/workflows/build.yml`) builds every push to main. To release, bump `versionCode` and
-`versionName` in `app/build.gradle.kts` and push: a new versionName becomes a GitHub release with `assist.apk`
-and `version.json`, and phones pick it up from there. The commit subject (minus a `1.9: ` prefix) is the release note.
+GitHub Actions (`.github/workflows/build.yml`) builds every push to main and publishes it as a GitHub release
+with `assist.apk` and `version.json`; phones pick it up from there. Versions are never set by hand: the
+versionCode is 100 + the commit count and the versionName is `1.<commit count>`. The release notes are the commit
+subjects since the previous release, and the newest one shows in the update notification.
 
 Signing uses the repository secrets `KEYSTORE_B64`, `STORE_PASSWORD`, `KEY_ALIAS` and `KEY_PASSWORD`. Keep the
 original `release.jks`: updates only install over the old app when they're signed with the same key.

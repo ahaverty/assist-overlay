@@ -11,6 +11,9 @@ val keystoreProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 
+val commitCount = providers.exec { commandLine("git", "rev-list", "--count", "HEAD") }
+    .standardOutput.asText.get().trim().toInt()
+
 android {
     namespace = "com.ahaverty.assist"
     compileSdk = 35
@@ -19,8 +22,9 @@ android {
         applicationId = "com.ahaverty.assist"
         minSdk = 31
         targetSdk = 35
-        versionCode = 110
-        versionName = "1.10"
+        // Never set by hand: one more for every commit on main, so sessions can't collide. CI releases each push.
+        versionCode = 100 + commitCount
+        versionName = "1.$commitCount"
         ndk {
             abiFilters += "arm64-v8a"
         }

@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import android.graphics.Bitmap
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -31,12 +32,14 @@ data class Msg(
     val error: Boolean = false,
     /** Phone actions in this reply that have run, by their `do:` target. */
     val actions: Map<String, PhoneActions.Result> = emptyMap(),
+    /** The app whose screen went along with this question, shown under the bubble. */
+    val screen: String? = null,
 )
 
 enum class Phase { Idle, Listening, Thinking, Speaking }
 
 /** Text going along with the next question: what was on screen, or something shared into the app. */
-data class Attachment(val label: String, val text: String, val shared: Boolean, val on: Boolean)
+data class Attachment(val label: String, val text: String, val shared: Boolean, val on: Boolean, val shot: Bitmap? = null)
 
 data class UiState(
     val messages: List<Msg> = emptyList(),
@@ -148,6 +151,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         visible = false
         stopListening()
         _state.update { if (it.attachment?.shared == false) it.copy(attachment = null) else it }
+        pendingShot = null
         if (_state.value.messages.isNotEmpty() && !tucked) postReopenNotice(alert = false)
     }
 
@@ -185,9 +189,23 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     // ---- screen text and shared text ----------------------------------------------------------------------------------
 
+    /** The screenshot Android hands over with the screen text; the two arrive in either order. */
+    private var pendingShot: Bitmap? = null
+
     fun setScreen(label: String, text: String) {
         if (text.isBlank()) return
-        _state.update { if (it.attachment?.shared == true) it else it.copy(attachment = Attachment(label, text, shared = false, on = false)) }
+        _state.update { if (it.attachment?.shared == true) it else it.copy(attachment = Attachment(label, text, shared = false, on = false, shot = pendingShot)) }
+    }
+
+    fun setScreenshot(shot: Bitmap?) {
+        pendingShot = shot
+        _state.update { s -> s.attachment?.takeIf { !it.shared }?.let { s.copy(attachment = it.copy(shot = shot)) } ?: s }
+    }
+
+    /** The screenshot button: the screen goes with the next question, said or typed. Listens if the mic had stopped. */
+    fun grabScreen() {
+        _state.update { s -> s.copy(attachment = s.attachment?.copy(on = true)) }
+        if (visible && _state.value.phase == Phase.Idle && App.auth.loggedIn && hasMic()) listen()
     }
 
     fun share(label: String, text: String) {
@@ -242,7 +260,10 @@ class Conversation(private val app: Context, private val ha: Ha) {
      * The text sent to HA for one question: a locked-phone mark for the bridge, then background context
      * (the earlier exchange after a gap, screen or shared text), then the question itself.
      */
+    private var sentScreen: String? = null
+
     private fun outgoing(question: String): String {
+        sentScreen = null
         val context = mutableListOf<String>()
         val earlier = _state.value.messages.filter { it.text.isNotBlank() && !it.error }
         // No conversation id (an earlier turn was cut short before HA gave one) means HA would start afresh too.
@@ -259,6 +280,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
                     if (a.shared) "$who shared this from ${a.label}" else "On $who's screen, in ${a.label}"
                 } +
                     ":\n" + a.text.take(6000)
+                sentScreen = a.label
             }
         }
         _state.update { it.copy(attachment = null) }
@@ -432,7 +454,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         _state.update {
             it.copy(
                 messages = it.messages.map { m -> if (m.streaming) m.copy(streaming = false) else m } +
-                    Msg(nextId, true, text) + Msg(replyId, false, "", streaming = true),
+                    Msg(nextId, true, text, screen = sentScreen) + Msg(replyId, false, "", streaming = true),
                 phase = Phase.Thinking,
                 notice = null,
             )

@@ -131,6 +131,11 @@ class AssistSession(context: Context) :
         App.convo.setScreen(label, lines.joinToString("\n").take(8000))
     }
 
+    /** The picture behind the screenshot button's grab animation (Friday itself gets the screen text). */
+    override fun onHandleScreenshot(screenshot: android.graphics.Bitmap?) {
+        App.convo.setScreenshot(screenshot)
+    }
+
     private fun collect(node: AssistStructure.ViewNode, out: MutableSet<String>) {
         if (out.sumOf { it.length } > 8000) return
         val password = node.inputType and InputType.TYPE_MASK_VARIATION in setOf(

@@ -40,7 +40,7 @@ class ReopenReceiver : BroadcastReceiver() {
 fun reopenAssist(context: Context) {
     val service = AssistService.instance
     if (service != null && VoiceInteractionService.isActiveService(context, android.content.ComponentName(context, AssistService::class.java))) {
-        service.showSession(Bundle(), VoiceInteractionSession.SHOW_WITH_ASSIST)
+        service.showSession(Bundle(), VoiceInteractionSession.SHOW_WITH_ASSIST or VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
     } else {
         context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }

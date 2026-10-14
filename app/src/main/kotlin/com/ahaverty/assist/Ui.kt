@@ -44,7 +44,6 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.KeyboardTab
 import androidx.compose.animation.core.Animatable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.graphicsLayer
@@ -61,7 +60,6 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.EditNote
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Smartphone
@@ -102,6 +100,28 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.offset
+import androidx.compose.material.icons.filled.Screenshot
+import androidx.compose.runtime.State
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.lerp
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.lerp
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 @Composable
 fun AssistTheme(content: @Composable () -> Unit) {
@@ -120,11 +140,19 @@ fun AssistOverlay(
     onOpenUrl: (String) -> Unit,
     windowPan: () -> Int = { 0 },
 ) {
+    var overlay by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    // The screenshot button's grab: the screen shrinks from full size into the button's spot in the text bar.
+    val grab = remember { Animatable(1f) }
+    var grabFrom by remember { mutableStateOf<Rect?>(null) }
+    var grabTo by remember { mutableStateOf<Rect?>(null) }
+    var grabShot by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    val scope = rememberCoroutineScope()
     Box(
         Modifier
             .fillMaxSize()
             // Undo the system's pan of the window: imePadding() below already clears the keyboard.
             .graphicsLayer { translationY = windowPan().toFloat() }
+            .onGloballyPositioned { overlay = it }
             .background(Color.Black.copy(alpha = 0.32f))
             // Swallow taps on the scrim: dismissing is only ever deliberate.
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
@@ -137,7 +165,54 @@ fun AssistOverlay(
             onOpenClaude = onOpenClaude,
             onOpenUrl = onOpenUrl,
             modifier = Modifier.navigationBarsPadding().imePadding(),
+            onGrab = { button, shot ->
+                val root = overlay
+                if (root != null && root.isAttached && button.isAttached) {
+                    // The screenshot is the whole display, and the overlay window covers it all too.
+                    grabFrom = Rect(0f, 0f, root.size.width.toFloat(), root.size.height.toFloat())
+                    grabTo = root.localBoundingBoxOf(button)
+                    grabShot = shot
+                    scope.launch {
+                        grab.snapTo(0f)
+                        grab.animateTo(1f, tween(520, easing = FastOutSlowInEasing))
+                    }
+                }
+            },
         )
+        val from = grabFrom
+        val to = grabTo
+        if (grab.value < 1f && from != null && to != null) {
+            Box(Modifier.matchParentSize()) { GrabFlight(grab.value, from, to, grabShot) }
+        }
+    }
+}
+
+/** One frame of the grab: a white flash and a little shrink at full size, then the flight into the text bar. */
+@Composable
+private fun GrabFlight(t: Float, from: Rect, to: Rect, shot: android.graphics.Bitmap?) {
+    val density = LocalDensity.current
+    val hold = 0.22f
+    val fly = ((t - hold) / (1f - hold)).coerceIn(0f, 1f)
+    val pop = (t / hold).coerceIn(0f, 1f)
+    val start = Rect(from.left + from.width * 0.05f, from.top + from.height * 0.05f, from.right - from.width * 0.05f, from.bottom - from.height * 0.05f)
+    val r = if (t < hold) lerp(from, start, pop) else lerp(start, to, fly)
+    val corner = lerp(0.dp, 10.dp, maxOf(pop, fly))
+    val shape = RoundedCornerShape(corner)
+    Box(
+        Modifier
+            .offset { IntOffset(r.left.roundToInt(), r.top.roundToInt()) }
+            .size(with(density) { r.width.toDp() }, with(density) { r.height.toDp() })
+            .graphicsLayer { shadowElevation = 24f * (1f - fly); this.shape = shape; clip = true }
+            .border(2.dp, Color.White.copy(alpha = 0.9f), shape)
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center,
+    ) {
+        val img = remember(shot) { shot?.asImageBitmap() }
+        if (img != null) Image(img, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        else Icon(Icons.Filled.Smartphone, contentDescription = null, modifier = Modifier.size(lerp(96.dp, 18.dp, fly)))
+        // Camera-style flash as the screen is caught.
+        val flash = (1f - t / 0.18f).coerceIn(0f, 1f)
+        if (flash > 0f) Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = 0.75f * flash)))
     }
 }
 
@@ -149,6 +224,7 @@ fun AssistPanel(
     onOpenUrl: (String) -> Unit,
     modifier: Modifier = Modifier,
     onTuck: ((left: Boolean) -> Unit)? = null,
+    onGrab: ((button: LayoutCoordinates, shot: android.graphics.Bitmap?) -> Unit)? = null,
 ) {
     val state by convo.state.collectAsState()
     BoxWithConstraints(modifier.fillMaxWidth()) {
@@ -235,7 +311,6 @@ fun AssistPanel(
                     state,
                     modifier = Modifier,
                     onClose = onClose,
-                    onTuck = onTuck,
                     onNew = convo::newChat,
                     onOpenClaude = onOpenClaude,
                     onToggleSpeak = convo::toggleSpeak,
@@ -247,8 +322,8 @@ fun AssistPanel(
                 } else {
                     Messages(state, onOpenUrl, Modifier.weight(1f, fill = false))
                     state.notice?.let { Notice(it, onDismiss = convo::clearNotice) }
-                    state.attachment?.let { AttachmentChip(it, onToggle = convo::toggleAttachment, onDrop = convo::dropAttachment) }
-                    InputRow(state, convo, micDown)
+                    state.attachment?.takeIf { it.shared }?.let { AttachmentChip(it, onToggle = convo::toggleAttachment, onDrop = convo::dropAttachment) }
+                    InputRow(state, convo, micDown, onGrab)
                 }
             }
         }
@@ -260,7 +335,6 @@ private fun Header(
     state: UiState,
     modifier: Modifier,
     onClose: () -> Unit,
-    onTuck: ((left: Boolean) -> Unit)?,
     onNew: () -> Unit,
     onOpenClaude: () -> Unit,
     onToggleSpeak: () -> Unit,
@@ -320,11 +394,6 @@ private fun Header(
         if (state.messages.isNotEmpty() && !state.showHistory) {
             IconButton(onClick = onNew) { Icon(Icons.Filled.EditNote, contentDescription = "New chat") }
         }
-        // Keeps going in a tab on the screen edge (EdgeTab). Swiping the header sideways does the same.
-        val tuckLeft = EdgeTab.lastLeft(LocalContext.current)
-        if (onTuck != null) IconButton(onClick = { onTuck(tuckLeft) }) {
-            Icon(Icons.AutoMirrored.Filled.KeyboardTab, contentDescription = "Tuck to the edge, keep going")
-        }
         IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close") }
     }
 }
@@ -354,7 +423,7 @@ private fun Messages(state: UiState, onOpenUrl: (String) -> Unit, modifier: Modi
             }
         }
         items(state.messages, key = { it.id }) { m ->
-            if (m.fromUser) UserBubble(m.text) else Reply(m, onOpenUrl)
+            if (m.fromUser) UserBubble(m.text, screen = m.screen) else Reply(m, onOpenUrl)
         }
         if (state.partial.isNotEmpty()) {
             item(key = "partial") { UserBubble(state.partial, live = true) }
@@ -363,8 +432,8 @@ private fun Messages(state: UiState, onOpenUrl: (String) -> Unit, modifier: Modi
 }
 
 @Composable
-private fun UserBubble(text: String, live: Boolean = false) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+private fun UserBubble(text: String, live: Boolean = false, screen: String? = null) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
         Surface(
             shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp),
             color = if (live) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f) else MaterialTheme.colorScheme.primaryContainer,
@@ -379,6 +448,11 @@ private fun UserBubble(text: String, live: Boolean = false) {
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                 )
             }
+        }
+        if (screen != null) Row(Modifier.padding(top = 3.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Screenshot, contentDescription = null, modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(4.dp))
+            Text("with your screen in $screen", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -461,8 +535,14 @@ private fun Notice(text: String, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun InputRow(state: UiState, convo: Conversation, micDown: androidx.compose.runtime.MutableState<Boolean>) {
+private fun InputRow(
+    state: UiState,
+    convo: Conversation,
+    micDown: androidx.compose.runtime.MutableState<Boolean>,
+    onGrab: ((LayoutCoordinates, android.graphics.Bitmap?) -> Unit)?,
+) {
     var typed by rememberSaveable { mutableStateOf("") }
+    val screen = state.attachment?.takeIf { !it.shared }
     Row(
         Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -473,7 +553,10 @@ private fun InputRow(state: UiState, convo: Conversation, micDown: androidx.comp
                 if (typed.isEmpty() && it.isNotEmpty()) convo.typingStarted()
                 typed = it
             },
-            placeholder = { Text("Ask ${Setup.assistantName}") },
+            placeholder = { Text(if (screen?.on == true) "Ask about this screen" else "Ask ${Setup.assistantName}", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            trailingIcon = if (screen == null) null else {
+                { ScreenButton(screen, onGrab = { button -> convo.grabScreen(); onGrab?.invoke(button, screen.shot) }, onDrop = convo::dropAttachment) }
+            },
             modifier = Modifier.weight(1f),
             shape = RoundedCornerShape(26.dp),
             maxLines = 4,
@@ -502,12 +585,16 @@ private fun MicButton(state: UiState, micDown: androidx.compose.runtime.MutableS
     val listening = state.phase == Phase.Listening
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val ring by animateFloatAsState(if (listening) 1f + state.level * 0.35f else 1f, tween(90), label = "ring")
+    val level = animateFloatAsState(if (listening && !state.transcribing) state.level else 0f, tween(80), label = "level")
     Box(contentAlignment = Alignment.Center, modifier = Modifier.size(64.dp)) {
         AnimatedVisibility(listening, enter = fadeIn() + slideInVertically { it / 4 }, exit = fadeOut()) {
-            Box(
-                Modifier.size(56.dp).scale(ring).clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
-            )
+            Box(contentAlignment = Alignment.Center) {
+                Ripples(MaterialTheme.colorScheme.primary)
+                Box(
+                    Modifier.size(56.dp).scale(ring).clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
+                )
+            }
         }
         // Tap: talk (stops by itself at a pause). Hold: walkie-talkie, listens until you let go.
         val bg = if (listening) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer
@@ -539,9 +626,8 @@ private fun MicButton(state: UiState, micDown: androidx.compose.runtime.MutableS
                 },
         ) {
             androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides fg) {
-            Icon(
+            if (listening) VoiceBars(level, fg, Modifier.size(26.dp)) else Icon(
                 when (state.phase) {
-                    Phase.Listening -> Icons.Filled.GraphicEq
                     Phase.Speaking -> Icons.Filled.Stop
                     else -> Icons.Filled.Mic
                 },
@@ -551,6 +637,75 @@ private fun MicButton(state: UiState, micDown: androidx.compose.runtime.MutableS
                     else -> "Talk, or hold to talk until you let go"
                 },
             )
+            }
+        }
+    }
+}
+
+/** Rings that keep spreading out from the mic while it listens, so it never looks frozen, even in silence. */
+@Composable
+private fun Ripples(color: Color) {
+    val t = rememberInfiniteTransition(label = "ripples")
+    val p by t.animateFloat(0f, 1f, infiniteRepeatable(tween(1800, easing = LinearEasing)), label = "ripple")
+    Canvas(Modifier.size(56.dp)) {
+        repeat(3) { i ->
+            val q = (p + i / 3f) % 1f
+            drawCircle(color.copy(alpha = 0.35f * (1f - q)), radius = size.minDimension / 2f * (1f + 0.45f * q))
+        }
+    }
+}
+
+/** Four bars in place of the mic icon: they idle in a slow wave and jump with the voice level. */
+@Composable
+private fun VoiceBars(level: State<Float>, color: Color, modifier: Modifier) {
+    val t = rememberInfiniteTransition(label = "bars")
+    val phase by t.animateFloat(0f, (2 * Math.PI).toFloat(), infiniteRepeatable(tween(1100, easing = LinearEasing)), label = "wave")
+    Canvas(modifier) {
+        val n = 4
+        val w = size.width / (n * 2f - 1f)
+        val shape = floatArrayOf(0.7f, 1f, 0.85f, 0.6f)
+        for (i in 0 until n) {
+            val idle = 0.22f + 0.13f * (1f + sin(phase + i * 1.3f)) / 2f
+            val voice = level.value.coerceIn(0f, 1f) * shape[i] * (0.75f + 0.25f * sin(phase * 2f + i))
+            val h = size.height * (idle + voice).coerceIn(0.18f, 1f)
+            drawRoundRect(color, topLeft = Offset(i * 2f * w, (size.height - h) / 2f), size = androidx.compose.ui.geometry.Size(w, h), cornerRadius = CornerRadius(w / 2f))
+        }
+    }
+}
+
+/**
+ * The screenshot button at the right of the text bar. Tapping it catches the screen (the overlay plays the
+ * grab) and the button becomes a little thumbnail of it; tapping the thumbnail lets it go again.
+ */
+@Composable
+private fun ScreenButton(a: Attachment, onGrab: (LayoutCoordinates) -> Unit, onDrop: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    var coords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    Box(Modifier.size(48.dp).onGloballyPositioned { coords = it }, contentAlignment = Alignment.Center) {
+        if (!a.on) {
+            IconButton(onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                coords?.let(onGrab)
+            }) {
+                Icon(Icons.Filled.Screenshot, contentDescription = "Ask about what's on screen (${a.label})", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            // Fades in as the flying screenshot lands on it.
+            val shown = remember { Animatable(0f) }
+            LaunchedEffect(Unit) { shown.animateTo(1f, tween(120, delayMillis = 430)) }
+            val img = remember(a.shot) { a.shot?.asImageBitmap() }
+            val label = "Screen of ${a.label} goes with your question. Tap to remove"
+            Box(
+                Modifier.size(width = 26.dp, height = 38.dp)
+                    .graphicsLayer { alpha = shown.value }
+                    .clip(RoundedCornerShape(6.dp))
+                    .border(1.5.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer)
+                    .clickable(onClick = onDrop),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (img != null) Image(img, contentDescription = label, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                else Icon(Icons.Filled.Smartphone, contentDescription = label, modifier = Modifier.size(16.dp))
             }
         }
     }

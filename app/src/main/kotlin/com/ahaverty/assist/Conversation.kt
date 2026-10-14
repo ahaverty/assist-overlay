@@ -57,9 +57,6 @@ data class UiState(
     val holding: Boolean = false,
 )
 
-/** Words that point at the screen: the screen text goes along automatically when the question uses one. */
-private val POINTS_AT_SCREEN = Regex("""\b(this|these|screen|page|article|email|message|here|on my phone)\b""", RegexOption.IGNORE_CASE)
-
 /**
  * The one conversation, kept in the app process so it survives the overlay being hidden
  * (home, recents, opening another app) for [Config.KEEP_MS], and saved to [History] after every reply.
@@ -320,7 +317,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
             context += "this continues our earlier conversation:\n" + transcript.takeLast(4000)
         }
         _state.value.attachment?.let { a ->
-            if (a.on || (!a.shared && POINTS_AT_SCREEN.containsMatchIn(question))) {
+            // Only when the screenshot button was tapped (or text was shared in), never guessed from the words.
+            if (a.on) {
                 context += Setup.userName.ifEmpty { "The user" }.let { who ->
                     if (a.shared) "$who shared this from ${a.label}" else "On $who's screen, in ${a.label}"
                 } +

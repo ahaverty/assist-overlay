@@ -57,7 +57,9 @@ class WhisperSpeech(
     private var committed = ""
     private var segment = ""
     private var segments = 0
-    private val shown get() = "$committed $segment".trim()
+    private var segBase = "" // [committed] when this recognizer session started
+    private var segHeld = "" // words this session said before it restarted mid-session (see onPartialResults)
+    private val shown get() = LiveWords.merge(committed, segment)
 
     // Whisper drafts (see the class comment). [turn] keeps a late draft from an old turn quiet.
     private var turn = 0
@@ -65,14 +67,13 @@ class WhisperSpeech(
     private var draftSnap = 0 // samples the running (or last) draft was given
     private var draft = ""
     private var draftDone = 0 // samples [draft] covers
-    private var draftGoogleWords = 0 // how many of Google's words the draft already covers
+    private var draftGoogle = "" // Google's words when the draft's audio was taken
     @Volatile private var lastSpeechSample = 0
 
-    /** Whisper's draft, then whatever Google has heard since it was taken. */
+    /** Whisper's draft, then whatever Google has heard since it was taken (minus any words both have). */
     private fun display(): String {
-        val google = shown
-        if (draft.isEmpty()) return google
-        return (draft + " " + google.split(' ').filter { it.isNotBlank() }.drop(draftGoogleWords).joinToString(" ")).trim()
+        if (draft.isEmpty()) return shown
+        return LiveWords.merge(draft, LiveWords.after(shown, draftGoogle))
     }
 
     val active: Boolean get() = !finished
@@ -91,7 +92,7 @@ class WhisperSpeech(
         draft = ""
         draftDone = 0
         draftSnap = 0
-        draftGoogleWords = 0
+        draftGoogle = ""
         lastSpeechSample = 0
         val minBuf = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val rec = try {
@@ -187,6 +188,9 @@ class WhisperSpeech(
         val audio = samples.toFloats()
         val t = turn
         draftSnap = audio.size
+        // Taken with the audio, not when Whisper is done: words said while it works are not in the draft.
+        // Google may still be a word behind here; display() drops any words the two then both have.
+        val googleThen = shown
         draftJob = scope.launch {
             val text = runCatching { Whisper.transcribe(context, model(), audio) }
                 .onFailure { Log.w(TAG, "draft failed", it) }
@@ -194,8 +198,7 @@ class WhisperSpeech(
             if (t != turn || finished) return@launch
             draft = text
             draftDone = audio.size
-            // Counted now, not when the audio was taken: Google lags a little and has caught up during the pause.
-            draftGoogleWords = shown.split(' ').count { it.isNotBlank() }
+            draftGoogle = googleThen
             onPartial(display())
         }
     }
@@ -251,9 +254,14 @@ class WhisperSpeech(
         }, "assist-preview").start()
         val r = SpeechRecognizer.createSpeechRecognizer(context, component)
         recognizer = r
-        fun endSegment() {
+        segBase = committed
+        segHeld = ""
+        fun endSegment(final: String?) {
             if (recognizer !== r) return
-            committed = shown
+            val last = final ?: segment
+            // A final that repeats the words held at a mid-session restart replaces them, rather than following them.
+            committed = if (segHeld.isNotEmpty() && LiveWords.startsLike(last, segHeld)) LiveWords.merge(segBase, last)
+            else LiveWords.merge(committed, last)
             segment = ""
             closeSegment()
             startPreviewSegment()
@@ -270,7 +278,16 @@ class WhisperSpeech(
                 partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() }?.let {
                     // After a pause Google sometimes starts a new utterance in the same session without
                     // ending the old one: keep the old words instead of letting the new ones replace them.
-                    if (restarted(segment, it)) committed = shown
+                    // If it then goes back to the whole utterance, that was only a revision: un-keep them.
+                    if (segHeld.isNotEmpty() && LiveWords.startsLike(it, segHeld) &&
+                        it.split(' ').count { w -> w.isNotBlank() } >= segHeld.split(' ').size
+                    ) {
+                        committed = segBase
+                        segHeld = ""
+                    } else if (restarted(segment, it)) {
+                        segHeld = LiveWords.merge(segHeld, segment)
+                        committed = LiveWords.merge(committed, segment)
+                    }
                     segment = it
                     onPartial(display())
                 }
@@ -278,13 +295,12 @@ class WhisperSpeech(
 
             override fun onResults(results: android.os.Bundle?) {
                 if (recognizer !== r) return
-                results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() }?.let { segment = it }
-                endSegment()
+                endSegment(results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() })
             }
 
             override fun onError(error: Int) {
                 Log.d(TAG, "preview error $error")
-                endSegment()
+                endSegment(null)
             }
         })
         previewQueue = queue

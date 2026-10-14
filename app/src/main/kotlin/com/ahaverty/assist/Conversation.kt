@@ -45,6 +45,7 @@ data class UiState(
     val notice: String? = null,
     val showHistory: Boolean = false,
     val attachment: Attachment? = null,
+    val transcribing: Boolean = false,
 )
 
 /** Words that point at the screen: the screen text goes along automatically when the question uses one. */
@@ -87,6 +88,30 @@ class Conversation(private val app: Context, private val ha: Ha) {
         onDone = { text, error -> onSpeechDone(text, error) },
     )
 
+    /** On-phone Whisper for the question itself (Google stays for live words and talk-over). */
+    private val whisper = WhisperSpeech(
+        app,
+        model = { whisperModel ?: Whisper.Model.SMALL },
+        onPartial = { p -> onPartial(p) },
+        onLevel = { l -> _state.update { it.copy(level = l) } },
+        onDone = { text, error -> onSpeechDone(text, error) },
+        onTranscribing = { _state.update { it.copy(transcribing = true, level = 0f) } },
+    )
+
+    /** "google", "small" or "turbo". */
+    var sttEngine: String
+        get() = prefs.getString("stt", "google") ?: "google"
+        set(v) = prefs.edit().putString("stt", v).apply()
+
+    private val whisperModel: Whisper.Model?
+        get() = when (sttEngine) {
+            "small" -> Whisper.Model.SMALL
+            "turbo" -> Whisper.Model.TURBO
+            else -> null
+        }?.takeIf { Whisper.ready(app, it) }
+
+    private val micBusy get() = speech.active || whisper.active
+
     private val busy get() = runJob?.isActive == true
 
     var bargeInEnabled: Boolean
@@ -106,6 +131,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
             _state.value.phase == Phase.Idle -> listen()
         }
         Updater.checkInBackground(app)
+        whisperModel?.let { m -> scope.launch { runCatching { Whisper.preload(app, m) } } }
     }
 
     fun onHidden() {
@@ -227,7 +253,10 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     fun micPressed() {
         when (_state.value.phase) {
-            Phase.Listening -> speech.stop()
+            Phase.Listening -> {
+                speech.stop()
+                whisper.stop()
+            }
             Phase.Speaking -> {
                 stopAudio()
                 listen()
@@ -260,14 +289,19 @@ class Conversation(private val app: Context, private val ha: Ha) {
         _state.update { it.copy(phase = Phase.Listening, partial = "", notice = null) }
         feedback.listening()
         // A beat after the chime, so the chime isn't heard as speech.
-        main.postDelayed({ if (_state.value.phase == Phase.Listening && !speech.active) speech.start() }, 160)
+        main.postDelayed({
+            if (_state.value.phase == Phase.Listening && !micBusy) {
+                if (whisperModel != null) whisper.start() else speech.start()
+            }
+        }, 160)
     }
 
     private fun stopListening() {
         bargeIn = false
-        if (speech.active || _state.value.phase == Phase.Listening) {
+        if (micBusy || _state.value.phase == Phase.Listening) {
             speech.cancel()
-            _state.update { it.copy(phase = if (it.phase == Phase.Listening) (if (busy) Phase.Thinking else Phase.Idle) else it.phase, partial = "", level = 0f) }
+            whisper.cancel()
+            _state.update { it.copy(phase = if (it.phase == Phase.Listening) (if (busy) Phase.Thinking else Phase.Idle) else it.phase, partial = "", level = 0f, transcribing = false) }
         }
     }
 
@@ -290,7 +324,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
             }
             return
         }
-        _state.update { it.copy(partial = "", level = 0f, phase = if (busy) Phase.Thinking else if (it.phase == Phase.Listening) Phase.Idle else it.phase) }
+        _state.update { it.copy(partial = "", level = 0f, transcribing = false, phase = if (busy) Phase.Thinking else if (it.phase == Phase.Listening) Phase.Idle else it.phase) }
         if (text != null) feedback.heard() else feedback.nothing()
         when {
             text != null -> send(text, spoken = true)
@@ -310,7 +344,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     }
 
     private fun startBargeIn() {
-        if (!bargeInEnabled || !visible || !hasMic() || speech.active) return
+        if (!bargeInEnabled || !visible || !hasMic() || micBusy) return
         bargeIn = true
         speech.start()
     }

@@ -16,6 +16,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -70,6 +71,13 @@ class MainActivity : ComponentActivity() {
                     androidx.compose.runtime.LaunchedEffect(Unit) {
                         if (intent?.action == ACTION_TRY) App.convo.onShown()
                         if (intent?.action == Updater.ACTION_INSTALL) installUpdate()
+                        if (intent?.action == ACTION_BENCH) {
+                            val wav = java.io.File(getExternalFilesDir(null), "bench.wav")
+                            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                runCatching { Whisper.benchmark(this@MainActivity, wav) }.getOrElse { "benchmark failed: $it" }
+                            }
+                            Toast.makeText(this@MainActivity, result, Toast.LENGTH_LONG).show()
+                        }
                         Updater.checkInBackground(this@MainActivity, force = true)
                     }
                     when (screen) {
@@ -160,11 +168,7 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Text(
-                "Speech recognition: ${Speech.recognizerLabel(this@MainActivity)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            SpeechPicker()
             Toggle("Chime and buzz when listening", App.convo.feedback.enabled) {
                 App.convo.feedback.enabled = it
                 if (it) App.convo.feedback.listening()
@@ -197,6 +201,57 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.size(4.dp))
             Button(onClick = onTry, enabled = loggedIn, modifier = Modifier.fillMaxWidth()) { Text("Try it here") }
         }
+    }
+
+    /** Google (live words) or on-phone Whisper; Whisper models download from the PC the first time. */
+    @Composable
+    private fun SpeechPicker() {
+        var engine by remember { mutableStateOf(App.convo.sttEngine) }
+        val progress = remember { androidx.compose.runtime.mutableStateMapOf<Whisper.Model, Float>() }
+        var error by remember { mutableStateOf<String?>(null) }
+        val scope = rememberCoroutineScope()
+        Text("Speech recognition", style = MaterialTheme.typography.titleMedium)
+        val options = listOf(Triple("google", "Google", "Live words, fastest. ${Speech.recognizerLabel(this@MainActivity)}")) +
+            Whisper.Model.entries.map { m ->
+                val key = if (m == Whisper.Model.SMALL) "small" else "turbo"
+                val state = when {
+                    Whisper.ready(this@MainActivity, m) -> "On the phone. " + (getSharedPreferences("ui", MODE_PRIVATE).getString("whisper_last_${m.name}", null)
+                        ?: if (m == Whisper.Model.SMALL) "Quick." else "Most accurate, a bit slower.")
+                    progress[m] != null -> "Downloading ${(progress[m]!! * 100).toInt()}%…"
+                    else -> "${m.mb} MB download from the PC (home Wi-Fi or WireGuard)."
+                }
+                Triple(key, m.label, state)
+            }
+        options.forEach { (key, label, detail) ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable {
+                    val m = when (key) { "small" -> Whisper.Model.SMALL; "turbo" -> Whisper.Model.TURBO; else -> null }
+                    if (m != null && !Whisper.ready(this@MainActivity, m)) {
+                        if (progress[m] != null) return@clickable
+                        progress[m] = 0f
+                        error = null
+                        scope.launch {
+                            runCatching { Whisper.download(this@MainActivity, m) { progress[m] = it } }
+                                .onSuccess { App.convo.sttEngine = key; engine = key }
+                                .onFailure { error = "Download failed: ${it.message}. It needs home Wi-Fi or WireGuard." }
+                            progress.remove(m)
+                        }
+                    } else {
+                        App.convo.sttEngine = key
+                        engine = key
+                    }
+                },
+            ) {
+                androidx.compose.material3.RadioButton(selected = engine == key, onClick = null)
+                Spacer(Modifier.size(12.dp))
+                Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
+                    Text(label, style = MaterialTheme.typography.bodyLarge)
+                    Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
     }
 
     @Composable
@@ -268,5 +323,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val ACTION_TRY = "com.ahaverty.assist.TRY"
+        const val ACTION_BENCH = "com.ahaverty.assist.BENCH"
     }
 }

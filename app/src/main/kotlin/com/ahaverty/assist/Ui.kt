@@ -172,7 +172,7 @@ private fun Header(
         Column(Modifier.weight(1f)) {
             Text(if (state.showHistory) "Recent chats" else Config.ASSISTANT_NAME, style = MaterialTheme.typography.titleMedium)
             val status = when (state.phase) {
-                Phase.Listening -> "Listening…"
+                Phase.Listening -> if (state.transcribing) "Transcribing…" else "Listening…"
                 Phase.Thinking -> "Thinking…"
                 Phase.Speaking -> "Speaking"
                 Phase.Idle -> null

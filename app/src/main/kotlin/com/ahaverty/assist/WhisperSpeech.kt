@@ -16,6 +16,7 @@ import android.speech.SpeechRecognizer
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.util.concurrent.LinkedBlockingQueue
@@ -28,7 +29,9 @@ private const val RATE = 16_000
  * One listening turn with Whisper. The app records the mic itself and decides when Alan has finished:
  * a real pause ([PAUSE_MS] of quiet), or letting go of the mic button in hold-to-talk. Then the whole
  * clip is transcribed on the phone. The same audio goes to Google's recognizer only to show live words;
- * Google never ends the turn.
+ * Google never ends the turn. At each short breath the clip so far is also transcribed by Whisper ("drafts"),
+ * so the shown words settle to what will be sent while Alan is still talking, with only the newest words
+ * Google's. When the turn ends with no speech after the last draft, that draft is sent as it is.
  */
 class WhisperSpeech(
     private val context: Context,
@@ -56,6 +59,22 @@ class WhisperSpeech(
     private var segments = 0
     private val shown get() = "$committed $segment".trim()
 
+    // Whisper drafts (see the class comment). [turn] keeps a late draft from an old turn quiet.
+    private var turn = 0
+    private var draftJob: Job? = null
+    private var draftSnap = 0 // samples the running (or last) draft was given
+    private var draft = ""
+    private var draftDone = 0 // samples [draft] covers
+    private var draftGoogleWords = 0 // how many of Google's words the draft already covers
+    @Volatile private var lastSpeechSample = 0
+
+    /** Whisper's draft, then whatever Google has heard since it was taken. */
+    private fun display(): String {
+        val google = shown
+        if (draft.isEmpty()) return google
+        return (draft + " " + google.split(' ').filter { it.isNotBlank() }.drop(draftGoogleWords).joinToString(" ")).trim()
+    }
+
     val active: Boolean get() = !finished
 
     /** [holdToTalk]: keep listening through any pause until [stop] (the mic button was let go). */
@@ -69,6 +88,11 @@ class WhisperSpeech(
         segment = ""
         segments = 0
         samples.clear()
+        draft = ""
+        draftDone = 0
+        draftSnap = 0
+        draftGoogleWords = 0
+        lastSpeechSample = 0
         val minBuf = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val rec = try {
             AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, RATE))
@@ -93,6 +117,9 @@ class WhisperSpeech(
     fun cancel() {
         cancelled = true
         finished = true
+        turn++
+        draftJob?.cancel()
+        draftJob = null
         recording = false
         thread?.join(500)
         thread = null
@@ -106,6 +133,7 @@ class WhisperSpeech(
         var speechMs = 0
         var silenceMs = 0
         val started = SystemClock.elapsedRealtime()
+        var lastDraftAt = started
         try {
             while (recording) {
                 val n = rec.read(chunk, 0, chunk.size)
@@ -126,11 +154,18 @@ class WhisperSpeech(
                 if (loud) {
                     speechMs += 20
                     silenceMs = 0
+                    lastSpeechSample = samples.count
                 } else {
                     silenceMs += 20
                 }
                 main.post { onLevel((rms / 3000).toFloat().coerceIn(0f, 1f)) }
-                val elapsed = SystemClock.elapsedRealtime() - started
+                val now = SystemClock.elapsedRealtime()
+                val elapsed = now - started
+                // A breath, or a long run of talk with no breath in it: settle the words so far.
+                if (speechMs >= 200 && (silenceMs == DRAFT_PAUSE_MS || (loud && now - lastDraftAt > 8000))) {
+                    lastDraftAt = now
+                    main.post { draftNow() }
+                }
                 when {
                     hold -> if (elapsed > 120_000) recording = false // held: only letting go ends it
                     speechMs >= 200 && silenceMs >= PAUSE_MS -> recording = false // a real pause: finished
@@ -145,18 +180,45 @@ class WhisperSpeech(
         }
     }
 
+    /** Transcribe the clip so far in the background and show it as settled words (one draft at a time). */
+    private fun draftNow() {
+        if (finished || !recording || draftJob?.isActive == true) return
+        if (lastSpeechSample <= draftSnap) return // nothing said since the last draft
+        val audio = samples.toFloats()
+        val t = turn
+        draftSnap = audio.size
+        draftJob = scope.launch {
+            val text = runCatching { Whisper.transcribe(context, model(), audio) }
+                .onFailure { Log.w(TAG, "draft failed", it) }
+                .getOrNull()?.takeIf { it.isNotBlank() } ?: return@launch
+            if (t != turn || finished) return@launch
+            draft = text
+            draftDone = audio.size
+            // Counted now, not when the audio was taken: Google lags a little and has caught up during the pause.
+            draftGoogleWords = shown.split(' ').count { it.isNotBlank() }
+            onPartial(display())
+        }
+    }
+
     private fun captured(heardSpeech: Boolean) {
-        val fallback = shown
+        val fallback = display()
         closeSegment()
         onLevel(0f)
         if (finished) return
         if (!heardSpeech && fallback.isBlank()) return finish(null, null)
         val audio = samples.toFloats()
+        // The last draft already heard everything said (only the closing quiet came after it): use it.
+        val drafted = draftJob?.takeIf { draftSnap >= lastSpeechSample }
+        val t = turn
         onTranscribing()
         scope.launch {
+            drafted?.join()
+            if (t != turn) return@launch
+            if (drafted != null && draft.isNotBlank() && draftDone >= lastSpeechSample) return@launch finish(draft, null)
             val text = runCatching { Whisper.transcribe(context, model(), audio) }
                 .onFailure { Log.w(TAG, "whisper failed", it) }
                 .getOrNull()
+            if (t != turn) return@launch
             finish(text?.takeIf { it.isNotBlank() } ?: fallback.takeIf { it.isNotBlank() }, null)
         }
     }
@@ -206,8 +268,11 @@ class WhisperSpeech(
             override fun onPartialResults(partialResults: android.os.Bundle?) {
                 if (recognizer !== r) return
                 partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() }?.let {
+                    // After a pause Google sometimes starts a new utterance in the same session without
+                    // ending the old one: keep the old words instead of letting the new ones replace them.
+                    if (restarted(segment, it)) committed = shown
                     segment = it
-                    onPartial(shown)
+                    onPartial(display())
                 }
             }
 
@@ -251,6 +316,16 @@ class WhisperSpeech(
     companion object {
         /** Quiet that ends a turn when not holding the button: long enough for a breath mid-sentence. */
         const val PAUSE_MS = 2200
+
+        /** Quiet that starts a Whisper draft (a multiple of the 20 ms mic chunk). */
+        const val DRAFT_PAUSE_MS = 600
+
+        /** True when [next] is a fresh utterance, not a revision of [old]: much shorter, with a different start. */
+        fun restarted(old: String, next: String): Boolean {
+            val a = old.lowercase().split(' ').filter { it.isNotBlank() }
+            val b = next.lowercase().split(' ').filter { it.isNotBlank() }
+            return a.size >= 3 && b.size * 2 < a.size && b.take(2) != a.take(minOf(2, b.size))
+        }
     }
 }
 
@@ -258,6 +333,8 @@ class WhisperSpeech(
 private class ShortArrayBuilder {
     private var data = ShortArray(RATE * 10)
     private var size = 0
+
+    val count: Int @Synchronized get() = size
 
     @Synchronized fun clear() {
         size = 0

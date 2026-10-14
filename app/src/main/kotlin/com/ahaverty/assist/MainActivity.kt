@@ -165,7 +165,11 @@ class MainActivity : ComponentActivity() {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Toggle("Chime and buzz when listening", Feedback(this@MainActivity).enabled) { Feedback(this@MainActivity).enabled = it; refresh++ }
+            Toggle("Chime and buzz when listening", App.convo.feedback.enabled) {
+                App.convo.feedback.enabled = it
+                if (it) App.convo.feedback.listening()
+                refresh++
+            }
             Toggle("Talk over a spoken reply to interrupt it", App.convo.bargeInEnabled) { App.convo.bargeInEnabled = it; refresh++ }
             Text(
                 "Questions about \"this\" or \"this page\" send the screen's text along. That needs " +

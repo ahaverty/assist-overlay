@@ -60,7 +60,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private val prefs = app.getSharedPreferences("ui", Context.MODE_PRIVATE)
     private val _state = MutableStateFlow(UiState(speakReplies = prefs.getBoolean("speak", true)))
     val state: StateFlow<UiState> = _state
-    private val feedback = Feedback(app)
+    val feedback = Feedback(app)
 
     private var conversationId: String? = null
     private var lastActivity = 0L
@@ -291,7 +291,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
             return
         }
         _state.update { it.copy(partial = "", level = 0f, phase = if (busy) Phase.Thinking else if (it.phase == Phase.Listening) Phase.Idle else it.phase) }
-        feedback.done()
+        if (text != null) feedback.heard() else feedback.nothing()
         when {
             text != null -> send(text, spoken = true)
             error != null -> notice(error)

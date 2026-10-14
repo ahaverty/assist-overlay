@@ -61,7 +61,8 @@ class SentenceChunker {
         while (true) {
             val para = buf.indexOf("\n\n")
             val sentence = Regex("""[.!?…](\s)""").findAll(buf).firstOrNull { it.range.first >= 30 }?.range?.first
-            val cut = listOfNotNull(para.takeIf { it >= 0 }, sentence?.plus(1)).minOrNull() ?: break
+            // A paragraph break is consumed with the piece before it; otherwise the next pass would find it at 0 forever.
+            val cut = listOfNotNull(para.takeIf { it >= 0 }?.plus(2), sentence?.plus(1)).minOrNull() ?: break
             val piece = buf.substring(0, cut).trim()
             buf.delete(0, cut)
             if (piece.isNotEmpty()) out += piece

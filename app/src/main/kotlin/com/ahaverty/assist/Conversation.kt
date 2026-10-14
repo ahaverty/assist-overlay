@@ -29,6 +29,8 @@ data class Msg(
     val text: String,
     val streaming: Boolean = false,
     val error: Boolean = false,
+    /** Phone actions in this reply that have run, by their `do:` target. */
+    val actions: Map<String, PhoneActions.Result> = emptyMap(),
 )
 
 enum class Phase { Idle, Listening, Thinking, Speaking }
@@ -114,6 +116,9 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private val micBusy get() = speech.active || whisper.active
 
     private val busy get() = runJob?.isActive == true
+
+    /** Set by the open panel: hides it (a phone action opened another app, e.g. Maps). */
+    var onLeave: (() -> Unit)? = null
 
     var bargeInEnabled: Boolean
         get() = prefs.getBoolean("barge_in", true)
@@ -466,6 +471,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
             } finally {
                 speaker?.end()
                 edit(replyId) { it.copy(streaming = false) }
+                if (runJob === me) runActions(replyId)
                 lastActivity = System.currentTimeMillis()
                 if (runJob === me) {
                     runJob = null
@@ -479,6 +485,18 @@ class Conversation(private val app: Context, private val ha: Ha) {
                 }
             }
         }
+    }
+
+    /** Carries out the reply's `do:` lines once it is complete (alarms, timers, opening apps, directions). */
+    private fun runActions(replyId: Long) {
+        val reply = _state.value.messages.firstOrNull { it.id == replyId }?.takeIf { !it.error } ?: return
+        val targets = reply.text.lines().mapNotNull { HA_EMBED.matchEntire(it.trim())?.groupValues?.get(2) }
+            .filter { PhoneActions.isAction(it) }.distinct()
+        if (targets.isEmpty()) return
+        val results = targets.associateWith { PhoneActions.run(app, it) }
+        edit(replyId) { it.copy(actions = results) }
+        results.values.firstOrNull { !it.ok }?.let { notice(it.text) }
+        if (visible && results.values.any { it.ok && it.leavesPanel }) onLeave?.invoke()
     }
 
     private fun edit(id: Long, f: (Msg) -> Msg) = _state.update { s -> s.copy(messages = s.messages.map { if (it.id == id) f(it) else it }) }

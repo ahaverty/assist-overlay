@@ -412,7 +412,8 @@ private fun Reply(m: Msg, onOpenUrl: (String) -> Unit) {
             val embed = HA_EMBED.matchEntire(p)
             val isStatus = p.endsWith("…") && p.length < 80 && !p.contains('\n')
             if (embed != null) {
-                Embed(embed.groupValues[1], embed.groupValues[2])
+                val target = embed.groupValues[2]
+                if (PhoneActions.isAction(target)) ActionChip(embed.groupValues[1], m.actions[target]) else Embed(embed.groupValues[1], target)
             } else if (isStatus) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (m.streaming && i == paragraphs.lastIndex) {

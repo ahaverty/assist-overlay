@@ -16,7 +16,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Alarm
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -46,8 +53,11 @@ import org.json.JSONObject
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 
-/** `![Front garden](ha:camera.front_garden)` on its own line: a picture or card instead of text. */
-val HA_EMBED = Regex("""^!\[([^\]]*)]\((ha:[a-z_]+\.[a-z0-9_]+|https?://\S+)\)$""")
+/**
+ * `![Front garden](ha:camera.front_garden)` on its own line: a picture or card instead of text.
+ * `![Alarm 7:00](do:alarm?time=07:00)` is a phone action ([PhoneActions]), shown as a chip.
+ */
+val HA_EMBED = Regex("""^!\[([^\]]*)]\((ha:[a-z_]+\.[a-z0-9_]+|do:[a-z]+(?:\?\S*)?|https?://\S+)\)$""")
 
 @Composable
 fun Embed(name: String, target: String) {
@@ -56,6 +66,27 @@ fun Embed(name: String, target: String) {
         !target.startsWith("ha:") -> WebImage(name, target)
         entity.startsWith("camera.") -> CameraCard(name, entity)
         else -> StateCard(name, entity)
+    }
+}
+
+/** A phone action line: what it did ([result]), or just its name while the reply streams or in an old chat. */
+@Composable
+fun ActionChip(name: String, result: PhoneActions.Result?) {
+    val failed = result?.ok == false
+    val icon = when {
+        failed -> Icons.Filled.ErrorOutline
+        name.contains("timer", ignoreCase = true) -> Icons.Filled.Timer
+        name.contains("alarm", ignoreCase = true) -> Icons.Filled.Alarm
+        name.contains("direction", ignoreCase = true) || name.contains("navigat", ignoreCase = true) -> Icons.Filled.Navigation
+        else -> Icons.Filled.OpenInNew
+    }
+    val tint = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+    Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(result?.text ?: name, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 

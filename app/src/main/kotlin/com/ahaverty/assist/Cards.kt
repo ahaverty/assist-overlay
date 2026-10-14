@@ -57,7 +57,17 @@ import java.time.temporal.ChronoUnit
  * `![Front garden](ha:camera.front_garden)` on its own line: a picture or card instead of text.
  * `![Alarm 7:00](do:alarm?time=07:00)` is a phone action ([PhoneActions]), shown as a chip.
  */
-val HA_EMBED = Regex("""^!\[([^\]]*)]\((ha:[a-z_]+\.[a-z0-9_]+|do:[a-z]+(?:\?\S*)?|https?://\S+)\)$""")
+val HA_EMBED = Regex("""^!\[([^\]]*)]\((ha:[a-z_]+\.[a-z0-9_]+|do:[a-z]+(?:\?[^\s)]*)?|https?://\S+)\)$""")
+
+private val INLINE_EMBED = Regex("""!\[[^\]\n]*]\((?:ha:[a-z_]+\.[a-z0-9_]+|do:[a-z]+(?:\?[^\s)]*)?|https?://[^\s)]+)\)""")
+
+/** The model sometimes tacks an embed onto the end of a sentence: give every one its own line. */
+fun embedLines(text: String): String =
+    if (!text.contains("![")) text
+    else INLINE_EMBED.replace(text) { "\n" + it.value + "\n" }
+        .replace(Regex("""[ \t]*\n[ \t]*"""), "\n")
+        .replace(Regex("""\n{3,}"""), "\n\n")
+        .trim()
 
 @Composable
 fun Embed(name: String, target: String) {

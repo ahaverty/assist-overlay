@@ -465,7 +465,7 @@ private fun UserBubble(text: String, live: Boolean = false, screen: String? = nu
 private fun Reply(m: Msg, onOpenUrl: (String) -> Unit) {
     val linkColor = MaterialTheme.colorScheme.primary
     // Paragraphs, with any ![name](ha:entity) line pulled out as its own picture/card block.
-    val paragraphs = m.text.split("\n\n").flatMap { para ->
+    val paragraphs = embedLines(m.text).split("\n\n").flatMap { para ->
         val out = mutableListOf<String>()
         val text = StringBuilder()
         para.lines().forEach { line ->

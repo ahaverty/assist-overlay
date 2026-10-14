@@ -161,6 +161,10 @@ class MainActivity : ComponentActivity() {
                     permissions.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS))
                 }) { Text("Allow") }
             }
+            val contacts = checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+            Step("Contacts (directions to people)", contacts) {
+                if (!contacts) Button(onClick = { permissions.launch(arrayOf(Manifest.permission.READ_CONTACTS)) }) { Text("Allow") }
+            }
             Step("Default digital assistant", isAssistant) {
                 OutlinedButton(onClick = {
                     runCatching { startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS)) }

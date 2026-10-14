@@ -1,10 +1,14 @@
 package com.ahaverty.assist
 
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.ContactsContract
 import android.provider.AlarmClock
+import org.json.JSONObject
 import java.util.Calendar
 
 /**
@@ -17,6 +21,8 @@ import java.util.Calendar
  *   do:alarms / do:timers                               show the Clock app's alarms / timers
  *   do:open?app=Spotify                                 open an app by its name
  *   do:navigate?to=..[&mode=d|w|b|l]                    Google Maps turn-by-turn (drive/walk/bike/two-wheeler)
+ *   do:navigate?entity=person.x|zone.home[&mode=..]    the same, to where a Home Assistant person or zone is right now
+ *   do:navigate?contact=Mam|Ann+Haverty[&mode=..]       the same, to a contact's address on the phone (first name that has one)
  */
 object PhoneActions {
     const val SCHEME = "do:"
@@ -25,7 +31,7 @@ object PhoneActions {
 
     fun isAction(target: String) = target.startsWith(SCHEME)
 
-    fun run(context: Context, target: String): Result = runCatching {
+    suspend fun run(context: Context, target: String): Result = runCatching {
         val uri = Uri.parse(target.removePrefix(SCHEME).let { if ('?' in it) it else "$it?" }.let { "x://a/$it" })
         val what = uri.path!!.trim('/')
         fun p(k: String) = uri.getQueryParameter(k)?.replace('+', ' ')?.trim()?.takeIf { it.isNotEmpty() }
@@ -35,7 +41,9 @@ object PhoneActions {
             "alarms" -> start(context, Intent(AlarmClock.ACTION_SHOW_ALARMS), "Opened alarms", leaves = true)
             "timers" -> start(context, Intent(AlarmClock.ACTION_SHOW_TIMERS), "Opened timers", leaves = true)
             "open" -> open(context, p("app") ?: return Result(false, "No app named"))
-            "navigate" -> navigate(context, p("to") ?: return Result(false, "No destination"), p("mode"))
+            "navigate" -> p("entity")?.let { navigateToEntity(context, it, p("mode")) }
+                ?: p("contact")?.let { navigateToContact(context, it, p("mode")) }
+                ?: navigate(context, p("to") ?: return Result(false, "No destination"), p("mode"))
             else -> Result(false, "Unknown phone action: $what")
         }
     }.getOrElse { Result(false, "Couldn't do that on the phone (${it.message ?: it.javaClass.simpleName})") }
@@ -84,6 +92,44 @@ object PhoneActions {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=${Uri.encode(to)}&mode=$m"))
             .setPackage("com.google.android.apps.maps")
         return start(context, intent, "Directions to $to", leaves = true)
+    }
+
+    /** A Home Assistant person, device tracker or zone, by its latitude/longitude now (so a moving person works). */
+    private suspend fun navigateToEntity(context: Context, entity: String, mode: String?): Result {
+        if (!Regex("""^(person|zone|device_tracker)\.[a-z0-9_]+$""").matches(entity)) return Result(false, "Can't navigate to $entity")
+        val state = JSONObject(String(App.ha.get("/api/states/$entity")))
+        val attrs = state.getJSONObject("attributes")
+        val name = attrs.optString("friendly_name").ifEmpty { entity }
+        if (!attrs.has("latitude") || !attrs.has("longitude")) return Result(false, "Home Assistant has no location for $name")
+        val at = "${attrs.getDouble("latitude")},${attrs.getDouble("longitude")}"
+        return navigate(context, at, mode).let { r -> if (r.ok) Result(true, "Directions to $name", true) else r }
+    }
+
+    /** Names separated by |, tried in order; within a name, an exact display name beats a partial one. */
+    private fun navigateToContact(context: Context, names: String, mode: String?): Result {
+        if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            return Result(false, "Allow Contacts in the Assist app to get directions to people")
+        }
+        val tried = names.split('|').map { it.trim() }.filter { it.isNotEmpty() }
+        for (name in tried) {
+            val found = contactAddress(context, name) ?: continue
+            return navigate(context, found.second, mode).let { r -> if (r.ok) Result(true, "Directions to ${found.first}", true) else r }
+        }
+        return Result(false, "No address in contacts for ${tried.joinToString(" or ")}")
+    }
+
+    private fun contactAddress(context: Context, name: String): Pair<String, String>? {
+        val postal = ContactsContract.CommonDataKinds.StructuredPostal.CONTENT_URI
+        val cols = arrayOf(ContactsContract.Contacts.DISPLAY_NAME, ContactsContract.CommonDataKinds.StructuredPostal.FORMATTED_ADDRESS)
+        val rows = mutableListOf<Pair<String, String>>()
+        context.contentResolver.query(postal, cols, "${ContactsContract.Contacts.DISPLAY_NAME} LIKE ?", arrayOf("%$name%"), null)?.use { c ->
+            while (c.moveToNext()) {
+                val who = c.getString(0) ?: continue
+                val address = c.getString(1)?.replace('\n', ' ')?.trim()?.takeIf { it.isNotEmpty() } ?: continue
+                rows += who to address
+            }
+        }
+        return rows.firstOrNull { it.first.equals(name, ignoreCase = true) } ?: rows.minByOrNull { it.first.length }
     }
 
     private fun start(context: Context, intent: Intent, done: String, leaves: Boolean = false): Result = try {

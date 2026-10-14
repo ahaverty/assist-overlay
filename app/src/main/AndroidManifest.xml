@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Phone actions (PhoneActions.kt): alarms and timers through the Clock app. -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- Directions to a contact's address (looked up on the phone, never sent anywhere). -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
     <!-- The edge tab the panel tucks into (EdgeTab.kt). -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 

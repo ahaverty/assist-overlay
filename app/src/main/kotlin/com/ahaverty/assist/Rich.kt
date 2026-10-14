@@ -36,7 +36,7 @@ fun richText(text: String, linkColor: Color, onOpen: (String) -> Unit): Annotate
 }
 
 /** Reply text for the voice: links become their name, bare URLs "a link", markdown marks dropped. */
-fun speakable(text: String): String = text.lines().filterNot { HA_EMBED.matches(it.trim()) }.joinToString("\n").let { TOKEN.replace(it) { m ->
+fun speakable(text: String): String = embedLines(text).lines().filterNot { HA_EMBED.matches(it.trim()) }.joinToString("\n").let { TOKEN.replace(it) { m ->
     val (name, _, bare, bold) = m.destructured
     when {
         name.isNotEmpty() -> name

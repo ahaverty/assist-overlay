@@ -146,12 +146,12 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     fun onShown() {
         visible = true
-        val wasTucked = tucked
+        main.removeCallbacks(idleCheck)
+        val stale = stale()
         tucked = false
         EdgeTab.remove()
         cancelReopenNotice()
-        // A tucked conversation waits for Alan however long he leaves it.
-        if (!wasTucked && System.currentTimeMillis() - lastActivity > Config.KEEP_MS) reset()
+        if (stale) reset()
         when {
             !App.auth.loggedIn -> notice("Open the Assist app and sign in to Home Assistant first.")
             !hasMic() -> notice("Open the Assist app to allow the microphone.")
@@ -168,6 +168,30 @@ class Conversation(private val app: Context, private val ha: Ha) {
         _state.update { if (it.attachment?.shared == false) it.copy(attachment = null) else it }
         pendingShot = null
         if (_state.value.messages.isNotEmpty() && !tucked) postReopenNotice(alert = false)
+        armIdleReset()
+    }
+
+    /** Idle too long to carry on: nothing asked or answered for [Config.KEEP_MS] ([Config.TUCKED_KEEP_MS] if tucked), and no answer on its way. */
+    private fun stale(): Boolean =
+        !busy && System.currentTimeMillis() - lastActivity > if (tucked) Config.TUCKED_KEEP_MS else Config.KEEP_MS
+
+    /** Clears an idle conversation while the panel is away (tab and notification too), so the next long-press starts fresh. */
+    private val idleCheck = Runnable {
+        if (visible) return@Runnable
+        if (stale()) {
+            if (tucked) EdgeTab.remove()
+            tucked = false
+            reset()
+        } else {
+            armIdleReset()
+        }
+    }
+
+    private fun armIdleReset() {
+        main.removeCallbacks(idleCheck)
+        if (visible || _state.value.messages.isEmpty()) return
+        val keep = if (tucked) Config.TUCKED_KEEP_MS else Config.KEEP_MS
+        main.postDelayed(idleCheck, maxOf(30_000L, keep - (System.currentTimeMillis() - lastActivity) + 1_000L))
     }
 
     /** Tuck the panel into the left or right edge; the caller hides the panel. False if not allowed to draw over apps yet. */

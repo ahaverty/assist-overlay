@@ -8,8 +8,9 @@ to one of your Home Assistant Assist pipelines.
   on the phone itself, downloaded from Hugging Face the first time.
 - Text goes to HA over the websocket (`assist_pipeline/run`, starting at the intent stage), so the reply streams in.
   Spoken replies use the pipeline's own TTS engine and voice, streamed sentence by sentence.
-- The conversation stays for 10 minutes (`Config.KEEP_MS`); a quiet notification reopens it. Fling the panel
-  sideways to tuck it into a tab on the screen edge while a slow answer comes in.
+- The conversation stays for 5 minutes after the last question or reply (`Config.KEEP_MS`), then the next
+  long-press starts a new one (the old one is in the history menu); a quiet notification reopens it meanwhile.
+  Fling the panel sideways to tuck it into a tab on the screen edge while a slow answer comes in (kept 30 minutes).
 - `![Name](ha:camera.x)` lines in a reply show as a camera picture or a state card.
 - "Continue in Claude" shares the transcript to the Claude app.
 

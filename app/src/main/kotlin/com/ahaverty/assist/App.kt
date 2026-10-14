@@ -17,8 +17,10 @@ object Config {
     const val CLIENT_ID = "https://assist.ahaverty.com/"
     const val REDIRECT_URI = "https://assist.ahaverty.com/auth_callback"
 
-    /** A conversation is kept (and shown again on the next long-press) this long after the last activity. */
-    const val KEEP_MS = 10 * 60 * 1000L
+    /** A conversation is kept (and shown again on the next long-press) this long after the last question or reply. */
+    const val KEEP_MS = 5 * 60 * 1000L
+    /** The same for a conversation tucked into the screen edge (a slow answer being waited on). */
+    const val TUCKED_KEEP_MS = 30 * 60 * 1000L
     /** Grabbing the mic button this soon after a pause sent the question takes it back to carry on. */
     const val TAKE_BACK_MS = 6_000L
 

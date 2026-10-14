@@ -91,6 +91,7 @@ class ReplyVoice(
         val p = player ?: ExoPlayer.Builder(context).build().also { p ->
             // ExoPlayer only manages focus itself for media/game usage, so ducking is done by hand.
             p.setAudioAttributes(AudioAttributes.Builder().setUsage(C.USAGE_ASSISTANT).setContentType(C.AUDIO_CONTENT_TYPE_SPEECH).build(), false)
+            p.setWakeMode(C.WAKE_MODE_NETWORK)
             p.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     if (playbackState == Player.STATE_ENDED) checkDone()

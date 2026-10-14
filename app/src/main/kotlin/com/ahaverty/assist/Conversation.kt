@@ -12,6 +12,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -68,6 +69,20 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private val _state = MutableStateFlow(UiState(speakReplies = prefs.getBoolean("speak", true)))
     val state: StateFlow<UiState> = _state
     val feedback = Feedback(app)
+
+    /**
+     * Held while a turn is under way (listening, thinking or speaking). Without it the phone sleeps a few
+     * seconds after the screen goes off (quickly when Assist was opened from the lock screen), the reply
+     * stream and the next TTS clip stall, and Friday stops mid-sentence. The timeout is only a safety net.
+     */
+    private val awake = app.getSystemService(PowerManager::class.java)
+        .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "assist:turn").apply { setReferenceCounted(false) }
+
+    init {
+        scope.launch {
+            _state.collect { s -> if (s.phase == Phase.Idle) awake.release() else if (!awake.isHeld) awake.acquire(5 * 60_000L) }
+        }
+    }
 
     private var conversationId: String? = null
     private var lastActivity = 0L

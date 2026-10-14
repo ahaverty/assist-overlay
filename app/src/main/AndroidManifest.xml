@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Keeps the CPU up while Friday is thinking or talking, so a reply doesn't stall when the screen goes off. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Phone actions (PhoneActions.kt): alarms and timers through the Clock app. -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
     <!-- Directions to a contact's address (looked up on the phone, never sent anywhere). -->

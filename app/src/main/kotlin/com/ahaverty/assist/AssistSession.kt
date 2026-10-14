@@ -19,6 +19,8 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.SavedStateRegistry
@@ -52,6 +54,15 @@ class AssistSession(context: Context) :
                 val at = IntArray(2).also(decor::getLocationInWindow)
                 windowPan.intValue = -at[1]
                 true
+            }
+        }
+        // The screen stays on while Friday listens, thinks or talks, so it doesn't lock (and hide the
+        // panel) mid-reply. The lock screen's own timeout is only a few seconds.
+        lifecycleScope.launch {
+            App.convo.state.collect { s ->
+                val w = window.window ?: return@collect
+                if (s.phase == Phase.Idle) w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                else w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
         }
     }

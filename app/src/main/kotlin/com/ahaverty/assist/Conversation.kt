@@ -329,8 +329,11 @@ class Conversation(private val app: Context, private val ha: Ha) {
         // Shared text goes once; the screen stays for follow-ups, its button back to unpressed.
         _state.update { it.copy(attachment = it.attachment?.takeIf { a -> !a.shared }?.copy(on = false)) }
         val locked = app.getSystemService(KeyguardManager::class.java).isKeyguardLocked
+        val unlocked = confirmNext && !locked
+        confirmNext = false
         return buildString {
             if (locked) append(LOCK_MARK).append('\n')
+            if (unlocked) append(UNLOCKED_MARK).append('\n')
             if (context.isNotEmpty()) append("(Context: ").append(context.joinToString("\n\n")).append(")\n\n")
             append(question)
         }
@@ -567,6 +570,55 @@ class Conversation(private val app: Context, private val ha: Ha) {
         }
     }
 
+    // ---- confirming by unlocking the phone ---------------------------------------------------------------------------
+
+    /** Starts an activity from the panel (set while it is shown): the assistant's own task, so it works on the lock screen. */
+    var onStartActivity: ((Intent) -> Unit)? = null
+    private var pendingConfirm: String? = null
+    /** The next question goes with UNLOCKED_MARK: Alan has just unlocked the phone to confirm. */
+    private var confirmNext = false
+
+    /**
+     * `do:unlock?then=..`: a door unlock or disarm asked while the phone was locked. The phone's own unlock screen
+     * (fingerprint, face or PIN) comes up over the panel; once it is unlocked, [then] goes to Friday as the yes.
+     * Nobody gets past it without unlocking the phone, so a pocket dial or someone else holding it can't open the door.
+     */
+    fun confirmByUnlock(then: String): PhoneActions.Result {
+        if (!app.getSystemService(KeyguardManager::class.java).isKeyguardLocked) {
+            main.post { sendConfirmed(then) }
+            return PhoneActions.Result(true, "Phone unlocked, confirming")
+        }
+        pendingConfirm = then
+        val intent = Intent(app, UnlockActivity::class.java)
+        val shown = runCatching {
+            onStartActivity?.invoke(intent) ?: app.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+        if (shown.isFailure) {
+            pendingConfirm = null
+            return PhoneActions.Result(false, "Couldn't show the unlock screen")
+        }
+        return PhoneActions.Result(true, "Unlock your phone to confirm")
+    }
+
+    /** From [UnlockActivity]: the phone was unlocked (send the yes) or the unlock screen was dismissed (do nothing). */
+    fun unlockFinished(ok: Boolean) {
+        val then = pendingConfirm ?: return
+        pendingConfirm = null
+        if (!ok) {
+            notice("Phone not unlocked, so nothing was done")
+            return
+        }
+        if (!visible) reopenAssist(app)
+        sendConfirmed(then)
+    }
+
+    private fun sendConfirmed(then: String) {
+        stopListening()
+        stopAudio()
+        confirmNext = true
+        send(then, spoken = lastTurnWasVoice)
+    }
+
     private fun edit(id: Long, f: (Msg) -> Msg) = _state.update { s -> s.copy(messages = s.messages.map { if (it.id == id) f(it) else it }) }
 
     private fun maybeContinue() {
@@ -683,5 +735,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     companion object {
         /** Tells the friday-voice bridge the phone was locked (it refuses door unlock and alarm disarm). */
         const val LOCK_MARK = "[assist:locked]"
+        /** The phone was just unlocked to confirm a door unlock or disarm asked while locked (the bridge takes it as yes). */
+        const val UNLOCKED_MARK = "[assist:unlocked]"
     }
 }

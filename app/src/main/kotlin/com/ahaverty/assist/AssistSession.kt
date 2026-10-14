@@ -117,12 +117,14 @@ class AssistSession(context: Context) :
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         App.convo.onLeave = { hide() }
+        App.convo.onStartActivity = { startAssistantActivity(it) }
         lifecycleRegistry.currentState = Lifecycle.State.RESUMED
         App.convo.onShown()
     }
 
     override fun onHide() {
         App.convo.onLeave = null
+        App.convo.onStartActivity = null
         App.convo.onHidden()
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         super.onHide()

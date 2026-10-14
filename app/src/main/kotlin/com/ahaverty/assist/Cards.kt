@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Timer
@@ -85,6 +86,7 @@ fun ActionChip(name: String, result: PhoneActions.Result?) {
     val failed = result?.ok == false
     val icon = when {
         failed -> Icons.Filled.ErrorOutline
+        name.contains("unlock", ignoreCase = true) -> Icons.Filled.LockOpen
         name.contains("timer", ignoreCase = true) -> Icons.Filled.Timer
         name.contains("alarm", ignoreCase = true) -> Icons.Filled.Alarm
         name.contains("direction", ignoreCase = true) || name.contains("navigat", ignoreCase = true) -> Icons.Filled.Navigation

@@ -23,6 +23,8 @@ import java.util.Calendar
  *   do:navigate?to=..[&mode=d|w|b|l]                    Google Maps turn-by-turn (drive/walk/bike/two-wheeler)
  *   do:navigate?entity=person.x|zone.home[&mode=..]    the same, to where a Home Assistant person or zone is right now
  *   do:navigate?contact=Mam|Ann+Haverty[&mode=..]       the same, to a contact's address on the phone (first name that has one)
+ *   do:unlock?then=Yes,+unlock+the+front+door           the phone's unlock screen, then send `then` as the confirmation
+ *                                                       (added by the bridge, not the persona: Conversation.confirmByUnlock)
  */
 object PhoneActions {
     const val SCHEME = "do:"
@@ -44,6 +46,7 @@ object PhoneActions {
             "navigate" -> p("entity")?.let { navigateToEntity(context, it, p("mode")) }
                 ?: p("contact")?.let { navigateToContact(context, it, p("mode")) }
                 ?: navigate(context, p("to") ?: return Result(false, "No destination"), p("mode"))
+            "unlock" -> App.convo.confirmByUnlock(p("then") ?: return Result(false, "Nothing to confirm"))
             else -> Result(false, "Unknown phone action: $what")
         }
     }.getOrElse { Result(false, "Couldn't do that on the phone (${it.message ?: it.javaClass.simpleName})") }

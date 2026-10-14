@@ -98,6 +98,15 @@
             android:exported="true"
             android:permission="android.permission.DUMP" />
 
+        <!-- The phone's unlock screen to confirm a door unlock or disarm asked while locked (UnlockActivity.kt). -->
+        <activity
+            android:name=".UnlockActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:showWhenLocked="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- "Share to Assist": text and links from any app ride along with the next question. -->
         <activity
             android:name=".ShareActivity"

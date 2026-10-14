@@ -114,7 +114,7 @@ object EdgeTab {
             background = bg
             elevation = dp(8).toFloat()
             setPadding(dp(8), dp(8), dp(8), dp(8))
-            contentDescription = "${Config.ASSISTANT_NAME}: tap to open"
+            contentDescription = "${Setup.assistantName}: tap to open"
         }
         fun arrange(isLeft: Boolean) {
             tab.removeAllViews()
@@ -213,9 +213,9 @@ object EdgeTab {
                 }
                 wasWorking = working
                 tab.contentDescription = when {
-                    working -> "${Config.ASSISTANT_NAME} is working. Tap to open"
-                    finished -> "${Config.ASSISTANT_NAME} answered. Tap to open"
-                    else -> "${Config.ASSISTANT_NAME}: tap to open"
+                    working -> "${Setup.assistantName} is working. Tap to open"
+                    finished -> "${Setup.assistantName} answered. Tap to open"
+                    else -> "${Setup.assistantName}: tap to open"
                 }
             }
         }

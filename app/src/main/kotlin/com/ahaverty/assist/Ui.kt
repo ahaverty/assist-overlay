@@ -277,7 +277,7 @@ private fun Header(
                     Modifier.clip(RoundedCornerShape(8.dp)).clickable { menu = true }.padding(end = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(Config.ASSISTANT_NAME, style = MaterialTheme.typography.titleMedium)
+                    Text(Setup.assistantName, style = MaterialTheme.typography.titleMedium)
                     Icon(Icons.Filled.ArrowDropDown, contentDescription = "More options")
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -346,7 +346,7 @@ private fun Messages(state: UiState, onOpenUrl: (String) -> Unit, modifier: Modi
         if (state.messages.isEmpty() && state.partial.isEmpty()) {
             item {
                 Text(
-                    if (state.phase == Phase.Listening) "Go ahead, I'm listening" else "Hi Alan. What can I do?",
+                    if (state.phase == Phase.Listening) "Go ahead, I'm listening" else Setup.userName.let { if (it.isEmpty()) "Hi. What can I do?" else "Hi $it. What can I do?" },
                     style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp),
@@ -472,7 +472,7 @@ private fun InputRow(state: UiState, convo: Conversation, micDown: androidx.comp
                 if (typed.isEmpty() && it.isNotEmpty()) convo.typingStarted()
                 typed = it
             },
-            placeholder = { Text("Ask ${Config.ASSISTANT_NAME}") },
+            placeholder = { Text("Ask ${Setup.assistantName}") },
             modifier = Modifier.weight(1f),
             shape = RoundedCornerShape(26.dp),
             maxLines = 4,

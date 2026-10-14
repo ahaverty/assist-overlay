@@ -142,14 +142,20 @@ class MainActivity : ComponentActivity() {
         ) {
             Text("Assist", style = MaterialTheme.typography.headlineMedium)
             Text(
-                "Long-press the power button to talk to ${Config.ASSISTANT_NAME} (your Claude Phone pipeline) over any app.",
+                "Long-press the power button to talk to your Home Assistant voice assistant over any app.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Text("Home Assistant", style = MaterialTheme.typography.titleMedium)
+            SettingField("remote_url", "Address from anywhere", "https://example.ui.nabu.casa")
+            SettingField("home_url", "Address at home (optional, tried first)", "http://192.168.1.10:8123")
             Step("Sign in to Home Assistant", loggedIn) {
                 if (loggedIn) TextButton(onClick = { App.auth.signOut(); refresh++ }) { Text("Sign out") }
-                else Button(onClick = onLogin) { Text("Sign in") }
+                else Button(onClick = onLogin, enabled = Setup.configured) { Text("Sign in") }
             }
+            if (loggedIn) PipelinePicker()
+            SettingField("assistant_name", "Assistant's name", "Assistant")
+            SettingField("user_name", "Your name (for the greeting)", "")
             Step("Microphone and notifications", mic && notif) {
                 if (!(mic && notif)) Button(onClick = {
                     permissions.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS))
@@ -193,7 +199,7 @@ class MainActivity : ComponentActivity() {
                 TextButton(onClick = {
                     update = "checking…"
                     scope.launch {
-                        val a = runCatching { Updater.check(this@MainActivity) }.getOrElse { update = "can't reach the PC (home Wi-Fi or WireGuard only)"; return@launch }
+                        val a = runCatching { Updater.check(this@MainActivity) }.getOrElse { update = "couldn't reach GitHub"; return@launch }
                         if (a == null) update = "up to date" else { update = "${a.versionName} available"; installUpdate() }
                     }
                 }) { Text("Check for update") }
@@ -203,7 +209,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Google (live words) or on-phone Whisper; Whisper models download from the PC the first time. */
+    /** Google (live words) or on-phone Whisper; the Whisper model downloads the first time. */
     @Composable
     private fun SpeechPicker() {
         var engine by remember { mutableStateOf(App.convo.sttEngine) }
@@ -217,7 +223,7 @@ class MainActivity : ComponentActivity() {
                 val state = when {
                     Whisper.ready(this@MainActivity, m) -> "On the phone, more accurate. " + (getSharedPreferences("ui", MODE_PRIVATE).getString("whisper_last_${m.name}", null) ?: "")
                     progress[m] != null -> "Downloading ${(progress[m]!! * 100).toInt()}%…"
-                    else -> "${m.mb} MB download from the PC (home Wi-Fi or WireGuard)."
+                    else -> "${m.mb} MB download, best on Wi-Fi."
                 }
                 Triple(key, m.label, state)
             }
@@ -233,7 +239,7 @@ class MainActivity : ComponentActivity() {
                         scope.launch {
                             runCatching { Whisper.download(this@MainActivity, m) { progress[m] = it } }
                                 .onSuccess { App.convo.sttEngine = key; engine = key }
-                                .onFailure { error = "Download failed: ${it.message}. It needs home Wi-Fi or WireGuard." }
+                                .onFailure { error = "Download failed: ${it.message}" }
                             progress.remove(m)
                         }
                     } else {
@@ -251,6 +257,58 @@ class MainActivity : ComponentActivity() {
             }
         }
         error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        if (engine != "google") SettingField("whisper_words", "Words Whisper should know", "Names, places, brands")
+    }
+
+    /** A text setting saved as you type (see [Setup]). */
+    @Composable
+    private fun SettingField(key: String, label: String, hint: String) {
+        var value by remember { mutableStateOf(Setup.get(key)) }
+        androidx.compose.material3.OutlinedTextField(
+            value = value,
+            onValueChange = { value = it; Setup.set(key, it); refresh++ },
+            label = { Text(label) },
+            placeholder = { Text(hint) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+
+    /** Which Assist pipeline to talk to; picking one also takes its reply voice. */
+    @Composable
+    private fun PipelinePicker() {
+        var pipelines by remember { mutableStateOf<List<Ha.Pipeline>?>(null) }
+        var error by remember { mutableStateOf<String?>(null) }
+        var chosen by remember { mutableStateOf(Setup.pipelineId) }
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            runCatching { App.ha.pipelines() }.onSuccess { pipelines = it }.onFailure { error = "Couldn't list pipelines: ${it.message}" }
+        }
+        Text("Voice assistant", style = MaterialTheme.typography.titleMedium)
+        val list = pipelines
+        if (list == null) {
+            Text(error ?: Setup.get("pipeline_name").ifEmpty { "Loading…" }, style = MaterialTheme.typography.bodySmall,
+                color = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            return
+        }
+        list.forEach { p ->
+            val selected = chosen == p.id || (chosen.isEmpty() && p.preferred)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable {
+                    Setup.set("pipeline_id", p.id)
+                    Setup.set("pipeline_name", p.name)
+                    Setup.set("tts_engine", p.tts.first)
+                    Setup.set("tts_language", p.tts.second)
+                    Setup.set("tts_voice", p.tts.third)
+                    chosen = p.id
+                },
+            ) {
+                androidx.compose.material3.RadioButton(selected = selected, onClick = null)
+                Spacer(Modifier.size(12.dp))
+                Text(p.name + if (p.preferred) " (HA's preferred)" else "", style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(vertical = 6.dp))
+            }
+        }
     }
 
     @Composable

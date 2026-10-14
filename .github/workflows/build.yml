@@ -1,0 +1,85 @@
+name: Build
+
+# Every push to main builds a signed APK. When versionName in app/build.gradle.kts has no release yet,
+# it becomes a GitHub release (assist.apk + version.json), which the app's updater picks up.
+# Pull requests build a debug APK without the signing key.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: NDK and CMake
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --console=plain
+
+      - name: Debug build (pull requests)
+        if: github.event_name == 'pull_request'
+        run: ./gradlew assembleDebug --console=plain
+
+      - name: Signing key
+        if: github.event_name != 'pull_request'
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > release.jks
+          printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > keystore.properties
+
+      - name: Release build
+        if: github.event_name != 'pull_request'
+        run: ./gradlew assembleRelease --console=plain
+
+      - name: Upload APK
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: assist-apk
+          path: app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish release for a new version
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          code=$(grep -oP 'versionCode = \K\d+' app/build.gradle.kts)
+          name=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          if gh release view "v$name" > /dev/null 2>&1; then
+            echo "v$name is already released; bump versionCode/versionName to publish."
+            exit 0
+          fi
+          # Release notes: the commit subject without its "1.9: " prefix.
+          notes=$(git log -1 --format=%s | sed -E 's/^[0-9.]+: //')
+          cp app/build/outputs/apk/release/app-release.apk assist.apk
+          jq -n --argjson c "$code" --arg n "$name" --arg t "$notes" \
+            '{versionCode: $c, versionName: $n, notes: $t}' > version.json
+          gh release create "v$name" assist.apk version.json --title "$name" --notes "$notes" --target "$GITHUB_SHA"

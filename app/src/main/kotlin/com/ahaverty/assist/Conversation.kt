@@ -250,7 +250,9 @@ class Conversation(private val app: Context, private val ha: Ha) {
         }
         _state.value.attachment?.let { a ->
             if (a.on || (!a.shared && POINTS_AT_SCREEN.containsMatchIn(question))) {
-                context += (if (a.shared) "Alan shared this from ${a.label}" else "On Alan's screen, in ${a.label}") +
+                context += Setup.userName.ifEmpty { "The user" }.let { who ->
+                    if (a.shared) "$who shared this from ${a.label}" else "On $who's screen, in ${a.label}"
+                } +
                     ":\n" + a.text.take(6000)
             }
         }
@@ -537,9 +539,9 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     fun transcript(): String {
         val lines = _state.value.messages.filter { it.text.isNotBlank() }.joinToString("\n\n") { m ->
-            (if (m.fromUser) "Me: " else "${Config.ASSISTANT_NAME}: ") + m.text.trim()
+            (if (m.fromUser) "Me: " else "${Setup.assistantName}: ") + m.text.trim()
         }
-        return "Carrying on from my Home Assistant voice assistant (${Config.ASSISTANT_NAME}). " +
+        return "Carrying on from my Home Assistant voice assistant (${Setup.assistantName}). " +
             "Here is the conversation so far:\n\n$lines\n\n"
     }
 
@@ -578,7 +580,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         )
         val n = Notification.Builder(app, if (alert) Config.CHANNEL_ANSWERS else Config.CHANNEL_REOPEN)
             .setSmallIcon(R.drawable.ic_launcher_fg)
-            .setContentTitle(if (alert) "${Config.ASSISTANT_NAME} answered" else Config.ASSISTANT_NAME)
+            .setContentTitle(if (alert) "${Setup.assistantName} answered" else Setup.assistantName)
             .setContentText(body)
             .setStyle(Notification.BigTextStyle().bigText(body))
             .setContentIntent(tap)

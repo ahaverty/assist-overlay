@@ -4,7 +4,9 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -22,7 +24,7 @@ sealed interface PipeEvent {
     data class Failed(val message: String) : PipeEvent
 }
 
-/** Runs the Claude Phone pipeline over HA's websocket, text in and text out: the phone does speech both ways. */
+/** Runs the chosen Assist pipeline over HA's websocket, text in and text out: the phone does speech both ways. */
 class Ha(private val auth: Auth) {
     private val ws = auth.http.newBuilder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -59,8 +61,8 @@ class Ha(private val auth: Auth) {
                             .put("start_stage", "intent")
                             .put("end_stage", "intent")
                             .put("input", JSONObject().put("text", input))
-                            .put("pipeline", Config.PIPELINE_ID)
                             .put("timeout", 300)
+                        Setup.pipelineId.takeIf { it.isNotEmpty() }?.let { run.put("pipeline", it) }
                         if (conversationId != null) run.put("conversation_id", conversationId)
                         webSocket.send(run.toString())
                     }
@@ -119,15 +121,73 @@ class Ha(private val auth: Auth) {
         }
     }
 
+    data class Pipeline(val id: String, val name: String, val preferred: Boolean, val tts: Triple<String, String, String>)
+
+    /** The Assist pipelines set up in HA (Settings > Voice assistants). */
+    suspend fun pipelines(): List<Pipeline> {
+        val r = command(JSONObject().put("type", "assist_pipeline/pipeline/list"))
+        val preferred = r.optString("preferred_pipeline")
+        val list = r.getJSONArray("pipelines")
+        return (0 until list.length()).map { i ->
+            val p = list.getJSONObject(i)
+            val id = p.getString("id")
+            Pipeline(id, p.optString("name", id), id == preferred,
+                Triple(p.optString("tts_engine").nullless(), p.optString("tts_language").nullless(), p.optString("tts_voice").nullless()))
+        }
+    }
+
+    private fun String.nullless() = if (this == "null") "" else this
+
+    /** One websocket command; returns its result. */
+    private suspend fun command(cmd: JSONObject): JSONObject {
+        val base = auth.base()
+        val token = auth.accessToken(base)
+        return withTimeout(15_000) {
+            suspendCancellableCoroutine { cont ->
+                val socket = ws.newWebSocket(
+                    Request.Builder().url(base.replaceFirst("http", "ws") + "/api/websocket").build(),
+                    object : WebSocketListener() {
+                        override fun onMessage(webSocket: WebSocket, text: String) {
+                            val msg = runCatching { JSONObject(text) }.getOrNull() ?: return
+                            when (msg.optString("type")) {
+                                "auth_required" -> webSocket.send(JSONObject().put("type", "auth").put("access_token", token).toString())
+                                "auth_invalid" -> fail(webSocket, "Home Assistant rejected the sign-in")
+                                "auth_ok" -> webSocket.send(cmd.put("id", 1).toString())
+                                "result" -> {
+                                    if (msg.optBoolean("success")) {
+                                        if (cont.isActive) cont.resumeWith(Result.success(msg.optJSONObject("result") ?: JSONObject()))
+                                        webSocket.close(1000, null)
+                                    } else fail(webSocket, msg.optJSONObject("error")?.optString("message") ?: "failed")
+                                }
+                            }
+                        }
+
+                        private fun fail(webSocket: WebSocket, why: String) {
+                            if (cont.isActive) cont.resumeWith(Result.failure(IOException(why)))
+                            webSocket.close(1000, null)
+                        }
+
+                        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                            auth.forgetBase()
+                            if (cont.isActive) cont.resumeWith(Result.failure(t))
+                        }
+                    },
+                )
+                cont.invokeOnCancellation { socket.cancel() }
+            }
+        }
+    }
+
     /** A TTS clip for [message] in the pipeline's voice; HA renders it when the URL is fetched. */
     suspend fun ttsUrl(message: String): String = withContext(Dispatchers.IO) {
+        if (Setup.ttsEngine.isEmpty()) throw IOException("no reply voice set up")
         val base = auth.base()
         val token = auth.accessToken(base)
         val body = JSONObject()
-            .put("engine_id", Config.TTS_ENGINE)
+            .put("engine_id", Setup.ttsEngine)
             .put("message", message)
-            .put("language", Config.TTS_LANGUAGE)
-            .put("options", JSONObject().put("voice", Config.TTS_VOICE))
+            .apply { Setup.ttsLanguage.takeIf { it.isNotEmpty() }?.let { put("language", it) } }
+            .apply { Setup.ttsVoice.takeIf { it.isNotEmpty() }?.let { put("options", JSONObject().put("voice", it)) } }
             .toString().toRequestBody("application/json".toMediaType())
         auth.http.newCall(
             Request.Builder().url("$base/api/tts_get_url").header("Authorization", "Bearer $token").post(body).build(),

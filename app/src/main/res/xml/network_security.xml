@@ -1,7 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Home Assistant on the LAN is plain http; everything else stays https-only. -->
+<!-- Home Assistant at home is often plain http on a LAN address the user types in, so cleartext is allowed. -->
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">192.168.1.10</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

@@ -36,16 +36,26 @@ class Auth(context: Context) {
         .appendQueryParameter("redirect_uri", Config.REDIRECT_URI)
         .build().toString()
 
-    /** The LAN address when it answers quickly, otherwise Nabu Casa. Re-checked every 2 minutes or after a failure. */
+    /**
+     * The home URL when it answers quickly, otherwise the remote one. Re-checked every 2 minutes or after
+     * a failure. Throws [NotLoggedIn] before a URL is set up.
+     */
     suspend fun base(): String = withContext(Dispatchers.IO) {
         val cached = baseUrl
         if (cached != null && System.currentTimeMillis() - baseCheckedAt < 120_000) return@withContext cached
-        val url = try {
-            probe.newCall(Request.Builder().url("${Config.INTERNAL_URL}/manifest.json").build()).execute().use {
-                if (it.code < 500) Config.INTERNAL_URL else Config.EXTERNAL_URL
+        val home = Setup.homeUrl
+        val remote = Setup.remoteUrl
+        val url = when {
+            home.isEmpty() && remote.isEmpty() -> throw NotLoggedIn()
+            home.isEmpty() -> remote
+            remote.isEmpty() -> home
+            else -> try {
+                probe.newCall(Request.Builder().url("$home/manifest.json").build()).execute().use {
+                    if (it.code < 500) home else remote
+                }
+            } catch (e: IOException) {
+                remote
             }
-        } catch (e: IOException) {
-            Config.EXTERNAL_URL
         }
         baseUrl = url
         baseCheckedAt = System.currentTimeMillis()

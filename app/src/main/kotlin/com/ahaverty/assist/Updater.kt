@@ -20,13 +20,13 @@ import okhttp3.Request
 import org.json.JSONObject
 
 /**
- * Self-update from the PC: https://3d.ahaverty.com/claude/assist-app/ (claude-launcher, LAN + WireGuard only)
- * serves version.json and assist.apk, published by publish.sh. Checked at most every 3 hours when the
+ * Self-update from the latest GitHub release, which the build workflow publishes with version.json and
+ * assist.apk on every version bump. Checked at most every 3 hours when the
  * overlay or the app opens; a newer build posts a notification, and tapping it installs through Android's
  * own installer (one confirmation, signature must match).
  */
 object Updater {
-    private const val BASE = "https://3d.ahaverty.com/claude/assist-app"
+    private const val BASE = "https://github.com/ahaverty/assist-overlay/releases/latest/download"
     private const val TAG = "AssistUpdate"
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 

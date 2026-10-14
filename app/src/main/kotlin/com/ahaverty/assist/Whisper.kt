@@ -40,9 +40,8 @@ object Whisper {
         SMALL("ggml-small.en-q8_0.bin", "Whisper", 264),
     }
 
-    /** Names Whisper would otherwise mishear; kept short so it can't leak into silent clips. */
-    private const val PROMPT = "Friday."
-    private const val BASE = "https://3d.ahaverty.com/claude/assist-app/models"
+    /** whisper.cpp's own model files on Hugging Face. */
+    private const val BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 
     private val worker = Dispatchers.Default.limitedParallelism(1)
     private var loaded: Pair<Model, Long>? = null
@@ -84,7 +83,7 @@ object Whisper {
     ): String = withContext(worker) {
         val ctx = ensure(context, m)
         val t = SystemClock.elapsedRealtime()
-        val raw = nativeTranscribe(ctx, samples, threads, PROMPT, audioCtx)
+        val raw = nativeTranscribe(ctx, samples, threads, prompt(), audioCtx)
         val ms = SystemClock.elapsedRealtime() - t
         Log.i(TAG, "${m.label}: ${samples.size / RATE.toFloat()} s audio in $ms ms: \"$raw\"")
         context.getSharedPreferences("ui", Context.MODE_PRIVATE).edit()
@@ -93,10 +92,14 @@ object Whisper {
         clean(raw)
     }
 
+    /** The assistant's name plus the user's own words (see [Setup.whisperWords]). */
+    private fun prompt() = listOf(Setup.assistantName, Setup.whisperWords).filter { it.isNotBlank() }.joinToString(", ")
+        .let { if (it.isEmpty() || it.endsWith(".")) it else "$it." }
+
     /** Whisper's non-speech markers ([BLANK_AUDIO], (music)) and stray whitespace. */
     fun clean(text: String) = text.replace(Regex("""\[[^\]]*]|\([^)]*\)"""), " ").replace(Regex("\\s+"), " ").trim()
 
-    /** Download a model from the PC (home Wi-Fi or WireGuard). [progress] gets 0..1. */
+    /** Download a model from Hugging Face. [progress] gets 0..1. */
     suspend fun download(context: Context, m: Model, progress: (Float) -> Unit) = withContext(Dispatchers.IO) {
         val dest = file(context, m)
         val part = File(dest.path + ".part")

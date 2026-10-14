@@ -84,7 +84,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -440,19 +441,24 @@ private fun MicButton(state: UiState, onClick: () -> Unit, onHoldStart: () -> Un
             contentAlignment = Alignment.Center,
             modifier = Modifier.size(if (state.holding) 64.dp else 56.dp).clip(CircleShape).background(bg)
                 .pointerInput(Unit) {
-                    detectTapGestures(
-                        onPress = {
-                            var held = false
-                            val timer = scope.launch {
-                                kotlinx.coroutines.delay(350)
-                                held = true
-                                onHoldStart()
-                            }
-                            val released = tryAwaitRelease()
-                            timer.cancel()
-                            if (held) onHoldEnd() else if (released) onClick()
-                        },
-                    )
+                    // Hold-to-talk follows the finger anywhere on screen: it only ends when the last finger
+                    // lifts, not when it slides off the button.
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        var held = false
+                        val timer = scope.launch {
+                            kotlinx.coroutines.delay(350)
+                            held = true
+                            onHoldStart()
+                        }
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { it.consume() }
+                            if (event.changes.none { it.pressed }) break
+                        }
+                        timer.cancel()
+                        if (held) onHoldEnd() else onClick()
+                    }
                 },
         ) {
             androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides fg) {

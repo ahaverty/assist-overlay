@@ -102,8 +102,7 @@ class WhisperSpeech(
     private fun capture(rec: AudioRecord) {
         val chunk = ShortArray(RATE / 50) // 20 ms
         val bytes = ByteArray(chunk.size * 2)
-        var noise = 0.0
-        var frames = 0
+        var noise = 300.0
         var speechMs = 0
         var silenceMs = 0
         val started = SystemClock.elapsedRealtime()
@@ -120,9 +119,10 @@ class WhisperSpeech(
                 }
                 previewQueue?.offer(bytes.copyOf(n * 2))
                 val rms = sqrt(sum / n)
-                frames++
-                if (frames <= 10) noise += rms / 10 // first 200 ms: the room's noise level
-                val loud = frames > 10 && rms > maxOf(noise * 3, 350.0)
+                // The room's quiet level, learnt as it goes: it drops quickly to any quieter moment and
+                // creeps up only slowly, so talking from the very first moment can't be mistaken for it.
+                noise = if (rms < noise) noise * 0.8 + rms * 0.2 else minOf(noise * 1.003, 2500.0)
+                val loud = rms > maxOf(noise * 2.2, 260.0)
                 if (loud) {
                     speechMs += 20
                     silenceMs = 0
@@ -250,7 +250,7 @@ class WhisperSpeech(
 
     companion object {
         /** Quiet that ends a turn when not holding the button: long enough for a breath mid-sentence. */
-        const val PAUSE_MS = 2000
+        const val PAUSE_MS = 2200
     }
 }
 

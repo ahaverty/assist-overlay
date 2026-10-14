@@ -27,6 +27,8 @@ object Config {
 
     /** A conversation is kept (and shown again on the next long-press) this long after the last activity. */
     const val KEEP_MS = 10 * 60 * 1000L
+    /** Grabbing the mic button this soon after a pause sent the question takes it back to carry on. */
+    const val TAKE_BACK_MS = 6_000L
 
     const val CLAUDE_PACKAGE = "com.anthropic.claude"
     const val CHANNEL_REOPEN = "reopen"

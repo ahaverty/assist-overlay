@@ -82,6 +82,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     /** True while the mic listens during a spoken reply, only to catch Alan talking over it. */
     private var bargeIn = false
+    /** What Alan had already said when he grabbed the mic button mid-sentence (see [holdStart]). */
+    private var carry = ""
     private var bargeRestarts = 0
 
     private val speech = Speech(
@@ -290,12 +292,22 @@ class Conversation(private val app: Context, private val ha: Ha) {
         send(text.trim(), spoken = false)
     }
 
-    /** Hold-to-talk: listen through any pause until [holdEnd]. Uses Whisper when it is on the phone. */
+    /**
+     * Hold-to-talk: listen through any pause until [holdEnd]. Uses Whisper when it is on the phone.
+     * Grabbed mid-sentence, it carries on from what was already heard instead of starting again; if the pause
+     * has just sent it (a few seconds ago, no answer yet), that question is taken back and carried on too.
+     */
     fun holdStart() {
+        val s = _state.value
+        carry = when {
+            s.phase == Phase.Listening && !s.holding -> s.partial.trim()
+            s.phase == Phase.Thinking && lastTurnWasVoice && System.currentTimeMillis() - lastActivity < Config.TAKE_BACK_MS -> takeBackLast()
+            else -> ""
+        }
         stopListening()
         stopAudio()
         if (!hasMic()) return notice("Open the Assist app to allow the microphone.")
-        _state.update { it.copy(phase = Phase.Listening, partial = "", notice = null, holding = true) }
+        _state.update { it.copy(phase = Phase.Listening, partial = carry, notice = null, holding = true) }
         feedback.listening()
         main.postDelayed({
             if (_state.value.holding && !micBusy) {
@@ -314,6 +326,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     fun typingStarted() = stopListening()
 
     private fun listen() {
+        carry = ""
         if (!hasMic()) return notice("Open the Assist app to allow the microphone.")
         stopAudio()
         bargeIn = false
@@ -336,8 +349,22 @@ class Conversation(private val app: Context, private val ha: Ha) {
         }
     }
 
+    /** The just-sent question, if no answer has started: cancel it, drop it from the chat and return its text. */
+    private fun takeBackLast(): String {
+        val msgs = _state.value.messages
+        val reply = msgs.lastOrNull() ?: return ""
+        val question = msgs.getOrNull(msgs.size - 2) ?: return ""
+        if (reply.fromUser || reply.text.isNotBlank() || !question.fromUser) return ""
+        runJob?.cancel()
+        runJob = null
+        _state.update { it.copy(messages = msgs.dropLast(2), phase = Phase.Idle) }
+        return question.text.trim()
+    }
+
+    private fun withCarry(p: String) = if (carry.isEmpty()) p else (carry + " " + p).trim()
+
     private fun onPartial(p: String) {
-        if (!bargeIn) return _state.update { it.copy(partial = p) }
+        if (!bargeIn) return _state.update { it.copy(partial = withCarry(p)) }
         if (!isInterruption(p)) return
         // Alan is talking over the reply: stop it and carry on with this as his next question.
         bargeIn = false
@@ -356,9 +383,11 @@ class Conversation(private val app: Context, private val ha: Ha) {
             return
         }
         _state.update { it.copy(partial = "", level = 0f, transcribing = false, holding = false, phase = if (busy) Phase.Thinking else if (it.phase == Phase.Listening) Phase.Idle else it.phase) }
-        if (text != null) feedback.heard() else feedback.nothing()
+        val said = text?.let { withCarry(it) } ?: carry.takeIf { it.isNotEmpty() }
+        carry = ""
+        if (said != null) feedback.heard() else feedback.nothing()
         when {
-            text != null -> send(text, spoken = true)
+            said != null -> send(said, spoken = true)
             error != null -> notice(error)
         }
     }

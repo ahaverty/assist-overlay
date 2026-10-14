@@ -57,6 +57,7 @@ import kotlin.math.sign
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
@@ -75,6 +76,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
@@ -233,7 +236,38 @@ private fun Header(
 ) {
     Row(modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(if (state.showHistory) "Recent chats" else Config.ASSISTANT_NAME, style = MaterialTheme.typography.titleMedium)
+            // The title opens the less used options (recent chats, Claude, spoken replies) so the header stays clear.
+            var menu by remember { mutableStateOf(false) }
+            if (state.showHistory) {
+                Text("Recent chats", style = MaterialTheme.typography.titleMedium)
+            } else Box {
+                Row(
+                    Modifier.clip(RoundedCornerShape(8.dp)).clickable { menu = true }.padding(end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(Config.ASSISTANT_NAME, style = MaterialTheme.typography.titleMedium)
+                    Icon(Icons.Filled.ArrowDropDown, contentDescription = "More options")
+                }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Recent chats") },
+                        leadingIcon = { Icon(Icons.Filled.History, contentDescription = null) },
+                        onClick = { menu = false; onHistory() },
+                    )
+                    if (state.messages.isNotEmpty()) DropdownMenuItem(
+                        text = { Text("Continue in Claude") },
+                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null) },
+                        onClick = { menu = false; onOpenClaude() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (state.speakReplies) "Mute spoken replies" else "Speak replies") },
+                        leadingIcon = {
+                            Icon(if (state.speakReplies) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null)
+                        },
+                        onClick = { menu = false; onToggleSpeak() },
+                    )
+                }
+            }
             val status = when (state.phase) {
                 Phase.Listening -> when {
                     state.transcribing -> "Transcribing…"
@@ -248,24 +282,10 @@ private fun Header(
                 Text(status ?: "", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             }
         }
-        IconButton(onClick = onHistory) {
-            Icon(
-                if (state.showHistory) Icons.AutoMirrored.Filled.ArrowBack else Icons.Filled.History,
-                contentDescription = if (state.showHistory) "Back to the chat" else "Recent chats",
-            )
-        }
-        if (!state.showHistory) IconButton(onClick = onToggleSpeak) {
-            Icon(
-                if (state.speakReplies) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
-                contentDescription = if (state.speakReplies) "Spoken replies on" else "Spoken replies off",
-            )
+        if (state.showHistory) IconButton(onClick = onHistory) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to the chat")
         }
         if (state.messages.isNotEmpty() && !state.showHistory) {
-            TextButton(onClick = onOpenClaude) {
-                Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Claude")
-            }
             IconButton(onClick = onNew) { Icon(Icons.Filled.EditNote, contentDescription = "New chat") }
         }
         // Keeps going in a tab on the screen edge (EdgeTab). Swiping the header sideways does the same.

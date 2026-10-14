@@ -10,6 +10,9 @@ import android.speech.RecognitionListener
 import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
+
+private const val TAG = "AssistSpeech"
 
 /**
  * One listening turn on the phone's own speech recognizer (live words while Alan talks).
@@ -42,11 +45,11 @@ class Speech(
         else SpeechRecognizer.createSpeechRecognizer(context)
         recognizer = r
         r.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onReadyForSpeech(params: Bundle?) { Log.d(TAG, "ready ($component)") }
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) = onLevel(((rmsdB + 2f) / 12f).coerceIn(0f, 1f))
             override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
+            override fun onEndOfSpeech() { Log.d(TAG, "end of speech") }
             override fun onEvent(eventType: Int, params: Bundle?) {}
 
             override fun onPartialResults(partialResults: Bundle?) {
@@ -58,11 +61,13 @@ class Speech(
             }
 
             override fun onResults(results: Bundle?) {
+                Log.d(TAG, "results: ${results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)}")
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
                 finish(text?.takeIf { it.isNotBlank() } ?: lastPartial.takeIf { it.isNotBlank() }, null)
             }
 
             override fun onError(error: Int) {
+                Log.d(TAG, "error $error after \"$lastPartial\"")
                 // A stop() can surface as an error after words were heard: keep what we have.
                 if (lastPartial.isNotBlank()) return finish(lastPartial, null)
                 finish(null, when (error) {
@@ -79,7 +84,9 @@ class Speech(
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IE")
             .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             .putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-            .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+            .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
+            .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
+            .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2500L)
         main.postDelayed(cap, 30_000)
         r.startListening(intent)
     }

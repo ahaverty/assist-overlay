@@ -9,6 +9,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioFocusRequest
+import android.media.AudioManager
+import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -49,6 +52,8 @@ data class UiState(
  * The one conversation, kept in the app process so it survives the overlay being hidden
  * (home, recents, opening another app) for [Config.KEEP_MS]. Only "New chat" or expiry clears it.
  */
+private const val TAG = "AssistConvo"
+
 class Conversation(private val app: Context, private val ha: Ha) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val prefs = app.getSharedPreferences("ui", Context.MODE_PRIVATE)
@@ -238,13 +243,31 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     // ---- reply audio --------------------------------------------------------------------------------------------------
 
-    private fun play(url: String) {
+    private val audioManager = app.getSystemService(AudioManager::class.java)
+    private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+        .setAudioAttributes(
+            android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANT)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build(),
+        )
+        .build()
+
+    /** Reply audio must never break the text reply, so any player problem is logged and skipped. */
+    private fun play(url: String) = runCatching { startPlayer(url) }.onFailure {
+        Log.w(TAG, "Reply audio failed", it)
+        stopAudio()
+    }
+
+    private fun startPlayer(url: String) {
         stopAudio()
         val p = ExoPlayer.Builder(app).build()
+        // ExoPlayer only manages focus itself for media/game usage; ducking other audio is done by hand.
         p.setAudioAttributes(
             AudioAttributes.Builder().setUsage(C.USAGE_ASSISTANT).setContentType(C.AUDIO_CONTENT_TYPE_SPEECH).build(),
-            true,
+            false,
         )
+        audioManager.requestAudioFocus(focusRequest)
         p.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) audioFinished(p)
@@ -263,6 +286,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         if (player !== p) return
         p.release()
         player = null
+        audioManager.abandonAudioFocusRequest(focusRequest)
         if (!busy) {
             _state.update { if (it.phase == Phase.Speaking) it.copy(phase = Phase.Idle) else it }
             maybeContinue()
@@ -274,6 +298,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
             player = null
             it.stop()
             it.release()
+            audioManager.abandonAudioFocusRequest(focusRequest)
         }
         _state.update { if (it.phase == Phase.Speaking) it.copy(phase = Phase.Idle) else it }
     }

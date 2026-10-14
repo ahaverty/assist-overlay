@@ -64,6 +64,15 @@ class AssistSession(context: Context) :
                         App.convo.close()
                         hide()
                     },
+                    onTuck = { left ->
+                        if (App.convo.tuck(left)) {
+                            hide()
+                        } else {
+                            Toast.makeText(context, "Allow Assist to display over other apps, then tuck it again", Toast.LENGTH_LONG).show()
+                            EdgeTab.askPermission(context)
+                            hide()
+                        }
+                    },
                     onOpenClaude = {
                         App.convo.openInClaude(context)?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
                         hide()

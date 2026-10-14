@@ -33,13 +33,16 @@ class AssistSessionService : VoiceInteractionSessionService() {
 
 /** The "recent conversation" notification: reopen the overlay where it was. */
 class ReopenReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        val service = AssistService.instance
-        if (service != null && VoiceInteractionService.isActiveService(context, android.content.ComponentName(context, AssistService::class.java))) {
-            service.showSession(Bundle(), VoiceInteractionSession.SHOW_WITH_ASSIST)
-        } else {
-            context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        }
+    override fun onReceive(context: Context, intent: Intent) = reopenAssist(context)
+}
+
+/** Bring the overlay back (the notification and the edge tab), or the app when we aren't the assistant. */
+fun reopenAssist(context: Context) {
+    val service = AssistService.instance
+    if (service != null && VoiceInteractionService.isActiveService(context, android.content.ComponentName(context, AssistService::class.java))) {
+        service.showSession(Bundle(), VoiceInteractionSession.SHOW_WITH_ASSIST)
+    } else {
+        context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }
 

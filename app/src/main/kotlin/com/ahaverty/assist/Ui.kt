@@ -44,6 +44,14 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardTab
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.launch
+import kotlin.math.abs
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.History
@@ -95,7 +103,7 @@ fun AssistTheme(content: @Composable () -> Unit) {
 
 /** Full-screen overlay: a light scrim that does nothing when touched, and the panel at the bottom. */
 @Composable
-fun AssistOverlay(convo: Conversation, onClose: () -> Unit, onOpenClaude: () -> Unit, onOpenUrl: (String) -> Unit) {
+fun AssistOverlay(convo: Conversation, onClose: () -> Unit, onTuck: (left: Boolean) -> Unit, onOpenClaude: () -> Unit, onOpenUrl: (String) -> Unit) {
     Box(
         Modifier
             .fillMaxSize()
@@ -107,6 +115,7 @@ fun AssistOverlay(convo: Conversation, onClose: () -> Unit, onOpenClaude: () -> 
         AssistPanel(
             convo = convo,
             onClose = onClose,
+            onTuck = onTuck,
             onOpenClaude = onOpenClaude,
             onOpenUrl = onOpenUrl,
             modifier = Modifier.navigationBarsPadding().imePadding(),
@@ -121,12 +130,38 @@ fun AssistPanel(
     onOpenClaude: () -> Unit,
     onOpenUrl: (String) -> Unit,
     modifier: Modifier = Modifier,
+    onTuck: ((left: Boolean) -> Unit)? = null,
 ) {
     val state by convo.state.collectAsState()
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxPanel = maxHeight * 0.82f
+        // Tucking by swipe only starts on the header and needs a long, deliberate drag; short ones spring back.
+        val widthPx = constraints.maxWidth.toFloat()
+        val drag = remember { Animatable(0f) }
+        val dragScope = rememberCoroutineScope()
+        val swipeToTuck = if (onTuck == null) Modifier else Modifier.pointerInput(onTuck) {
+            detectHorizontalDragGestures(
+                onDragEnd = {
+                    val x = drag.value
+                    if (abs(x) > widthPx * 0.4f) {
+                        onTuck(x < 0)
+                        dragScope.launch { drag.snapTo(0f) }
+                    } else {
+                        dragScope.launch { drag.animateTo(0f) }
+                    }
+                },
+                onDragCancel = { dragScope.launch { drag.animateTo(0f) } },
+            ) { change, dx ->
+                change.consume()
+                dragScope.launch { drag.snapTo(drag.value + dx) }
+            }
+        }
         Surface(
             modifier = Modifier
+                .graphicsLayer {
+                    translationX = drag.value
+                    alpha = 1f - (abs(drag.value) / widthPx).coerceIn(0f, 0.6f)
+                }
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp, vertical = 8.dp)
                 .heightIn(max = maxPanel)
@@ -139,7 +174,9 @@ fun AssistPanel(
             Column(Modifier.padding(top = 8.dp, bottom = 12.dp)) {
                 Header(
                     state,
+                    modifier = swipeToTuck,
                     onClose = onClose,
+                    onTuck = onTuck,
                     onNew = convo::newChat,
                     onOpenClaude = onOpenClaude,
                     onToggleSpeak = convo::toggleSpeak,
@@ -162,13 +199,15 @@ fun AssistPanel(
 @Composable
 private fun Header(
     state: UiState,
+    modifier: Modifier,
     onClose: () -> Unit,
+    onTuck: ((left: Boolean) -> Unit)?,
     onNew: () -> Unit,
     onOpenClaude: () -> Unit,
     onToggleSpeak: () -> Unit,
     onHistory: () -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(if (state.showHistory) "Recent chats" else Config.ASSISTANT_NAME, style = MaterialTheme.typography.titleMedium)
             val status = when (state.phase) {
@@ -200,6 +239,11 @@ private fun Header(
                 Text("Claude")
             }
             IconButton(onClick = onNew) { Icon(Icons.Filled.EditNote, contentDescription = "New chat") }
+        }
+        // Keeps going in a tab on the screen edge (EdgeTab). Swiping the header sideways does the same.
+        val tuckLeft = EdgeTab.lastLeft(LocalContext.current)
+        if (onTuck != null) IconButton(onClick = { onTuck(tuckLeft) }) {
+            Icon(Icons.AutoMirrored.Filled.KeyboardTab, contentDescription = "Tuck to the edge, keep going")
         }
         IconButton(onClick = onClose) { Icon(Icons.Filled.Close, contentDescription = "Close") }
     }

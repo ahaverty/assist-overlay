@@ -68,6 +68,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private var runJob: Job? = null
     private var voice: ReplyVoice? = null
     private var visible = false
+    /** The panel is tucked into the screen edge (EdgeTab): the conversation is still very much on. */
+    private var tucked = false
     private var lastTurnWasVoice = false
     private var continueConversation = false
     private var nextId = 1L
@@ -122,8 +124,12 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     fun onShown() {
         visible = true
+        val wasTucked = tucked
+        tucked = false
+        EdgeTab.remove()
         cancelReopenNotice()
-        if (System.currentTimeMillis() - lastActivity > Config.KEEP_MS) reset()
+        // A tucked conversation waits for Alan however long he leaves it.
+        if (!wasTucked && System.currentTimeMillis() - lastActivity > Config.KEEP_MS) reset()
         when {
             !App.auth.loggedIn -> notice("Open the Assist app and sign in to Home Assistant first.")
             !hasMic() -> notice("Open the Assist app to allow the microphone.")
@@ -138,7 +144,15 @@ class Conversation(private val app: Context, private val ha: Ha) {
         visible = false
         stopListening()
         _state.update { if (it.attachment?.shared == false) it.copy(attachment = null) else it }
-        if (_state.value.messages.isNotEmpty()) postReopenNotice(alert = false)
+        if (_state.value.messages.isNotEmpty() && !tucked) postReopenNotice(alert = false)
+    }
+
+    /** Tuck the panel into the left or right edge; the caller hides the panel. False if not allowed to draw over apps yet. */
+    fun tuck(left: Boolean): Boolean {
+        if (!EdgeTab.allowed(app)) return false
+        tucked = true
+        EdgeTab.show(app, left)
+        return true
     }
 
     /** The close button: stop talking and listening, keep the conversation for later. */
@@ -407,7 +421,9 @@ class Conversation(private val app: Context, private val ha: Ha) {
                     saveCurrent()
                     _state.update { if (it.phase == Phase.Thinking) it.copy(phase = if (voice != null) Phase.Speaking else Phase.Idle) else it }
                     // A slow answer that lands while the panel is away gets a proper (sounding) notification.
-                    if (!visible) postReopenNotice(alert = lastActivity - started > 15_000)
+                    // Tucked, the edge tab shows it; the sounding one still comes for a slow answer (phone in a pocket).
+                    val slow = lastActivity - started > 15_000
+                    if (!visible && (!tucked || slow)) postReopenNotice(alert = slow)
                     if (voice == null) maybeContinue()
                 }
             }

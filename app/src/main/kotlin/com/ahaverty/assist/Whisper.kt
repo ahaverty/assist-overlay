@@ -141,9 +141,9 @@ object Whisper {
             val ctx = nativeInit(f.path)
             if (ctx == 0L) continue
             for (threads in listOf(3, 4)) {
-                nativeTranscribe(ctx, samples.copyOf(RATE), threads, PROMPT, audioCtxFor(RATE)) // warm-up
+                nativeTranscribe(ctx, samples.copyOf(RATE), threads, prompt(), audioCtxFor(RATE)) // warm-up
                 val t = SystemClock.elapsedRealtime()
-                val text = clean(nativeTranscribe(ctx, samples, threads, PROMPT, audioCtxFor(samples.size)))
+                val text = clean(nativeTranscribe(ctx, samples, threads, prompt(), audioCtxFor(samples.size)))
                 lines += "${f.name} threads=$threads: ${SystemClock.elapsedRealtime() - t} ms for " +
                     "${"%.1f".format(samples.size / RATE.toFloat())} s: $text"
             }

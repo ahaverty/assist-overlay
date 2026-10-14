@@ -36,12 +36,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v5
 
-      - name: Unit tests
-        run: ./gradlew testDebugUnitTest --console=plain
+      # whisper.cpp is most of the build time; ccache keeps its objects between runs.
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ndk-27.2-${{ hashFiles('app/src/main/cpp/**', '.gitmodules') }}
+          restore-keys: ndk-27.2-
+          max-size: 500M
 
-      - name: Debug build (pull requests)
+      - name: Tests and debug build (pull requests)
         if: github.event_name == 'pull_request'
-        run: ./gradlew assembleDebug --console=plain
+        run: ./gradlew testDebugUnitTest assembleDebug --console=plain
 
       - name: Signing key
         if: github.event_name != 'pull_request'
@@ -55,9 +59,9 @@ jobs:
           printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
             "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > keystore.properties
 
-      - name: Release build
+      - name: Tests and release build
         if: github.event_name != 'pull_request'
-        run: ./gradlew assembleRelease --console=plain
+        run: ./gradlew testReleaseUnitTest assembleRelease --console=plain
 
       - name: Upload APK
         if: github.event_name != 'pull_request'

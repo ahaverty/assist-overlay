@@ -10,6 +10,7 @@ import android.service.voice.VoiceInteractionSession
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.core.view.WindowCompat
@@ -46,17 +47,22 @@ class AssistSession(context: Context) :
         window.window?.let {
             WindowCompat.setDecorFitsSystemWindows(it, false)
         }
-        keepWindowStill()
+        window.window?.decorView?.let { decor ->
+            decor.viewTreeObserver.addOnPreDrawListener {
+                val at = IntArray(2).also(decor::getLocationInWindow)
+                windowPan.intValue = -at[1]
+                true
+            }
+        }
     }
 
     /**
-     * The panel lifts itself with imePadding(). If the window also pans (the system's default for this
-     * window, which comes back after onCreate) the keyboard is counted twice and the panel floats a
-     * keyboard's height above it, so this is set again every time the overlay shows.
+     * How far the system has panned this window up to show the focused text field. Android 16 pans the
+     * voice interaction window whatever soft input mode is set, and the panel already lifts itself above
+     * the keyboard with imePadding(), so the overlay moves back down by this much (else it floats a
+     * keyboard's height above the keys). getLocationInWindow on the decor includes the pan.
      */
-    private fun keepWindowStill() {
-        window.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
-    }
+    private val windowPan = mutableIntStateOf(0)
 
     override fun onCreateContentView(): View = ComposeView(context).apply {
         setViewTreeLifecycleOwner(this@AssistSession)
@@ -67,6 +73,7 @@ class AssistSession(context: Context) :
             AssistTheme {
                 AssistOverlay(
                     convo = App.convo,
+                    windowPan = { windowPan.intValue },
                     onClose = {
                         App.convo.close()
                         hide()
@@ -98,7 +105,6 @@ class AssistSession(context: Context) :
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
-        keepWindowStill()
         lifecycleRegistry.currentState = Lifecycle.State.RESUMED
         App.convo.onShown()
     }

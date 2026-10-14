@@ -9,6 +9,9 @@ export JAVA_HOME="C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot"
 apk=app/build/outputs/apk/release/app-release.apk
 code=$(python -c "import re;print(re.search(r'versionCode = (\d+)', open('app/build.gradle.kts').read())[1])")
 name=$(python -c "import re;print(re.search(r'versionName = \"([^\"]+)', open('app/build.gradle.kts').read())[1])")
+# A failed build leaves the previous APK behind: never publish that under the new version.
+built=$(python -c "import json;print(json.load(open('app/build/outputs/apk/release/output-metadata.json'))['elements'][0]['versionCode'])")
+[ "$built" = "$code" ] || { echo "build failed: APK is versionCode $built, expected $code; nothing published" >&2; exit 1; }
 mkdir -p dist
 cp "$apk" dist/assist.apk
 cp "$apk" "dist/assist-$name.apk"

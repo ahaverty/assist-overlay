@@ -105,10 +105,19 @@ fun AssistTheme(content: @Composable () -> Unit) {
 
 /** Full-screen overlay: a light scrim that does nothing when touched, and the panel at the bottom. */
 @Composable
-fun AssistOverlay(convo: Conversation, onClose: () -> Unit, onTuck: (left: Boolean) -> Unit, onOpenClaude: () -> Unit, onOpenUrl: (String) -> Unit) {
+fun AssistOverlay(
+    convo: Conversation,
+    onClose: () -> Unit,
+    onTuck: (left: Boolean) -> Unit,
+    onOpenClaude: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+    windowPan: () -> Int = { 0 },
+) {
     Box(
         Modifier
             .fillMaxSize()
+            // Undo the system's pan of the window: imePadding() below already clears the keyboard.
+            .graphicsLayer { translationY = windowPan().toFloat() }
             .background(Color.Black.copy(alpha = 0.32f))
             // Swallow taps on the scrim: dismissing is only ever deliberate.
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},

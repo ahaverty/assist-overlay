@@ -89,7 +89,7 @@ fun AssistTheme(content: @Composable () -> Unit) {
 
 /** Full-screen overlay: a light scrim that does nothing when touched, and the panel at the bottom. */
 @Composable
-fun AssistOverlay(convo: Conversation, onClose: () -> Unit, onOpenClaude: () -> Unit) {
+fun AssistOverlay(convo: Conversation, onClose: () -> Unit, onOpenClaude: () -> Unit, onOpenUrl: (String) -> Unit) {
     Box(
         Modifier
             .fillMaxSize()
@@ -102,13 +102,20 @@ fun AssistOverlay(convo: Conversation, onClose: () -> Unit, onOpenClaude: () -> 
             convo = convo,
             onClose = onClose,
             onOpenClaude = onOpenClaude,
+            onOpenUrl = onOpenUrl,
             modifier = Modifier.navigationBarsPadding().imePadding(),
         )
     }
 }
 
 @Composable
-fun AssistPanel(convo: Conversation, onClose: () -> Unit, onOpenClaude: () -> Unit, modifier: Modifier = Modifier) {
+fun AssistPanel(
+    convo: Conversation,
+    onClose: () -> Unit,
+    onOpenClaude: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val state by convo.state.collectAsState()
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxPanel = maxHeight * 0.82f
@@ -125,7 +132,7 @@ fun AssistPanel(convo: Conversation, onClose: () -> Unit, onOpenClaude: () -> Un
         ) {
             Column(Modifier.padding(top = 8.dp, bottom = 12.dp)) {
                 Header(state, onClose = onClose, onNew = convo::newChat, onOpenClaude = onOpenClaude, onToggleSpeak = convo::toggleSpeak)
-                Messages(state, Modifier.weight(1f, fill = false))
+                Messages(state, onOpenUrl, Modifier.weight(1f, fill = false))
                 state.notice?.let { Notice(it, onDismiss = convo::clearNotice) }
                 InputRow(state, convo)
             }
@@ -167,7 +174,7 @@ private fun Header(state: UiState, onClose: () -> Unit, onNew: () -> Unit, onOpe
 }
 
 @Composable
-private fun Messages(state: UiState, modifier: Modifier = Modifier) {
+private fun Messages(state: UiState, onOpenUrl: (String) -> Unit, modifier: Modifier = Modifier) {
     val list = rememberLazyListState()
     val lastLen = state.messages.lastOrNull()?.text?.length ?: 0
     LaunchedEffect(state.messages.size, lastLen, state.partial) {
@@ -191,7 +198,7 @@ private fun Messages(state: UiState, modifier: Modifier = Modifier) {
             }
         }
         items(state.messages, key = { it.id }) { m ->
-            if (m.fromUser) UserBubble(m.text) else Reply(m)
+            if (m.fromUser) UserBubble(m.text) else Reply(m, onOpenUrl)
         }
         if (state.partial.isNotEmpty()) {
             item(key = "partial") { UserBubble(state.partial, live = true) }
@@ -225,7 +232,8 @@ private fun UserBubble(text: String, live: Boolean = false) {
  * status lines (with a spinner on the newest while still working) instead of being part of the answer.
  */
 @Composable
-private fun Reply(m: Msg) {
+private fun Reply(m: Msg, onOpenUrl: (String) -> Unit) {
+    val linkColor = MaterialTheme.colorScheme.primary
     val paragraphs = m.text.split("\n\n").map { it.trim() }.filter { it.isNotEmpty() }
     Column(Modifier.fillMaxWidth().padding(end = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (paragraphs.isEmpty() && m.streaming) TypingDots()
@@ -242,7 +250,7 @@ private fun Reply(m: Msg) {
             } else {
                 SelectionContainer {
                     Text(
-                        p,
+                        remember(p, linkColor) { richText(p, linkColor, onOpenUrl) },
                         style = MaterialTheme.typography.bodyLarge,
                         color = if (m.error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                     )

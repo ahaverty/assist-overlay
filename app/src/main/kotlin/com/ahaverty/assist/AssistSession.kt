@@ -1,6 +1,8 @@
 package com.ahaverty.assist
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.service.voice.VoiceInteractionSession
 import android.view.View
@@ -62,6 +64,13 @@ class AssistSession(context: Context) :
                     onOpenClaude = {
                         App.convo.openInClaude(context)?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
                         hide()
+                    },
+                    onOpenUrl = { url ->
+                        // The conversation stays; long-press again (or the notification) to come back to it.
+                        runCatching {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            hide()
+                        }.onFailure { Toast.makeText(context, "Couldn't open the link", Toast.LENGTH_SHORT).show() }
                     },
                 )
             }

@@ -3,7 +3,11 @@ package com.ahaverty.assist
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -15,19 +19,17 @@ sealed interface PipeEvent {
     /** Streamed reply text (includes the bridge's "Checking ...…" progress paragraphs). */
     data class Delta(val text: String) : PipeEvent
     data class IntentEnd(val speech: String, val conversationId: String?, val continueConversation: Boolean) : PipeEvent
-    /** Absolute URL of the reply audio; streamed while the text is still arriving when HA supports it. */
-    data class Tts(val url: String) : PipeEvent
     data class Failed(val message: String) : PipeEvent
 }
 
-/** Runs the Claude Phone pipeline over HA's websocket, text in (we do speech-to-text on the phone). */
+/** Runs the Claude Phone pipeline over HA's websocket, text in and text out: the phone does speech both ways. */
 class Ha(private val auth: Auth) {
     private val ws = auth.http.newBuilder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
-    fun run(text: String, conversationId: String?, withTts: Boolean): Flow<PipeEvent> = callbackFlow {
+    fun run(text: String, conversationId: String?): Flow<PipeEvent> = callbackFlow {
         val base = auth.base()
         val token = try {
             auth.accessToken(base)
@@ -39,7 +41,6 @@ class Ha(private val auth: Auth) {
         }
         val wsUrl = base.replaceFirst("http", "ws") + "/api/websocket"
         val input = text
-        var ttsSent = false
 
         val listener = object : WebSocketListener() {
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -56,7 +57,7 @@ class Ha(private val auth: Auth) {
                             .put("id", 1)
                             .put("type", "assist_pipeline/run")
                             .put("start_stage", "intent")
-                            .put("end_stage", if (withTts) "tts" else "intent")
+                            .put("end_stage", "intent")
                             .put("input", JSONObject().put("text", input))
                             .put("pipeline", Config.PIPELINE_ID)
                             .put("timeout", 300)
@@ -73,10 +74,6 @@ class Ha(private val auth: Auth) {
                         val ev = msg.optJSONObject("event") ?: return
                         val data = ev.optJSONObject("data")
                         when (ev.optString("type")) {
-                            "run-start" -> data?.optJSONObject("tts_output")?.optString("url")?.takeIf { it.isNotBlank() }?.let {
-                                ttsSent = true
-                                trySend(PipeEvent.Tts(absolute(base, it)))
-                            }
                             "intent-progress" -> data?.optJSONObject("chat_log_delta")?.optString("content", "")
                                 ?.takeIf { it.isNotEmpty() }?.let { trySend(PipeEvent.Delta(it)) }
                             "intent-end" -> {
@@ -88,12 +85,6 @@ class Ha(private val auth: Auth) {
                                     out?.optString("conversation_id")?.takeIf { it.isNotBlank() },
                                     out?.optBoolean("continue_conversation", false) ?: false,
                                 ))
-                            }
-                            "tts-end" -> if (!ttsSent) {
-                                data?.optJSONObject("tts_output")?.optString("url")?.takeIf { it.isNotBlank() }?.let {
-                                    ttsSent = true
-                                    trySend(PipeEvent.Tts(absolute(base, it)))
-                                }
                             }
                             "error" -> trySend(PipeEvent.Failed(data?.optString("message") ?: "Something went wrong"))
                             "run-end" -> {
@@ -118,5 +109,23 @@ class Ha(private val auth: Auth) {
         awaitClose { socket.cancel() }
     }
 
-    private fun absolute(base: String, url: String) = if (url.startsWith("http")) url else base + url
+    /** A TTS clip for [message] in the pipeline's voice; HA renders it when the URL is fetched. */
+    suspend fun ttsUrl(message: String): String = withContext(Dispatchers.IO) {
+        val base = auth.base()
+        val token = auth.accessToken(base)
+        val body = JSONObject()
+            .put("engine_id", Config.TTS_ENGINE)
+            .put("message", message)
+            .put("language", Config.TTS_LANGUAGE)
+            .put("options", JSONObject().put("voice", Config.TTS_VOICE))
+            .toString().toRequestBody("application/json".toMediaType())
+        auth.http.newCall(
+            Request.Builder().url("$base/api/tts_get_url").header("Authorization", "Bearer $token").post(body).build(),
+        ).execute().use { resp ->
+            if (!resp.isSuccessful) throw IOException("tts_get_url ${resp.code}")
+            val json = JSONObject(resp.body!!.string())
+            json.optString("path").takeIf { it.isNotBlank() }?.let { base + it } ?: json.getString("url")
+        }
+    }
+
 }

@@ -20,6 +20,11 @@ object Config {
     const val PIPELINE_ID = "PIPELINE_ID"
     const val ASSISTANT_NAME = "Friday"
 
+    /** The Claude Phone pipeline's voice. The app speaks replies itself so links can be read as their names. */
+    const val TTS_ENGINE = "tts.google_cloud"
+    const val TTS_LANGUAGE = "en-GB"
+    const val TTS_VOICE = "en-GB-Chirp-HD-O"
+
     /** A conversation is kept (and shown again on the next long-press) this long after the last activity. */
     const val KEEP_MS = 10 * 60 * 1000L
 

@@ -73,9 +73,14 @@ class MainActivity : ComponentActivity() {
                             if (ok) Toast.makeText(this, "Signed in to Home Assistant", Toast.LENGTH_SHORT).show()
                         })
                         "try" -> Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.BottomCenter) {
-                            AssistPanel(App.convo, onClose = { App.convo.close(); screen = "setup" }, onOpenClaude = {
-                                App.convo.openInClaude(this@MainActivity)?.let { Toast.makeText(this@MainActivity, it, Toast.LENGTH_LONG).show() }
-                            })
+                            AssistPanel(
+                                App.convo,
+                                onClose = { App.convo.close(); screen = "setup" },
+                                onOpenClaude = {
+                                    App.convo.openInClaude(this@MainActivity)?.let { Toast.makeText(this@MainActivity, it, Toast.LENGTH_LONG).show() }
+                                },
+                                onOpenUrl = { url -> runCatching { startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))) } },
+                            )
                         }
                         else -> SetupScreen(
                             tick = refresh,

@@ -9,15 +9,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.AudioFocusRequest
-import android.media.AudioManager
 import android.util.Log
-import androidx.media3.common.AudioAttributes
-import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,7 +55,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private var conversationId: String? = null
     private var lastActivity = 0L
     private var runJob: Job? = null
-    private var player: ExoPlayer? = null
+    private var voice: ReplyVoice? = null
     private var visible = false
     private var lastTurnWasVoice = false
     private var continueConversation = false
@@ -190,19 +182,24 @@ class Conversation(private val app: Context, private val ha: Ha) {
             )
         }
         nextId += 2
-        val withTts = voice && _state.value.speakReplies
+        val speaker = if (voice && _state.value.speakReplies) startVoice() else null
         runJob = scope.launch {
             val me = coroutineContext.job
             try {
-                ha.run(text, conversationId, withTts).collect { ev ->
+                ha.run(text, conversationId).collect { ev ->
                     when (ev) {
-                        is PipeEvent.Delta -> edit(replyId) { it.copy(text = it.text + ev.text) }
+                        is PipeEvent.Delta -> {
+                            edit(replyId) { it.copy(text = it.text + ev.text) }
+                            speaker?.add(ev.text)
+                        }
                         is PipeEvent.IntentEnd -> {
                             conversationId = ev.conversationId ?: conversationId
                             continueConversation = ev.continueConversation
-                            edit(replyId) { if (it.text.isBlank()) it.copy(text = ev.speech) else it }
+                            if (_state.value.messages.firstOrNull { it.id == replyId }?.text.isNullOrBlank() && ev.speech.isNotBlank()) {
+                                edit(replyId) { it.copy(text = ev.speech) }
+                                speaker?.add(ev.speech)
+                            }
                         }
-                        is PipeEvent.Tts -> if (_state.value.speakReplies) play(ev.url)
                         is PipeEvent.Failed -> edit(replyId) {
                             it.copy(text = (it.text.trimEnd() + "\n\n" + ev.message).trim(), error = true)
                         }
@@ -216,13 +213,14 @@ class Conversation(private val app: Context, private val ha: Ha) {
                 val why = e.message ?: e.javaClass.simpleName
                 edit(replyId) { it.copy(text = (it.text.trimEnd() + "\n\nCouldn't reach Home Assistant ($why).").trim(), error = true) }
             } finally {
+                speaker?.end()
                 edit(replyId) { it.copy(streaming = false) }
                 lastActivity = System.currentTimeMillis()
                 if (runJob === me) {
                     runJob = null
-                    _state.update { if (it.phase == Phase.Thinking) it.copy(phase = if (player != null) Phase.Speaking else Phase.Idle) else it }
+                    _state.update { if (it.phase == Phase.Thinking) it.copy(phase = if (voice != null) Phase.Speaking else Phase.Idle) else it }
                     if (!visible && _state.value.messages.isNotEmpty()) postReopenNotice()
-                    if (player == null) maybeContinue()
+                    if (voice == null) maybeContinue()
                 }
             }
         }
@@ -243,64 +241,32 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     // ---- reply audio --------------------------------------------------------------------------------------------------
 
-    private val audioManager = app.getSystemService(AudioManager::class.java)
-    private val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-        .setAudioAttributes(
-            android.media.AudioAttributes.Builder()
-                .setUsage(android.media.AudioAttributes.USAGE_ASSISTANT)
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build(),
-        )
-        .build()
-
-    /** Reply audio must never break the text reply, so any player problem is logged and skipped. */
-    private fun play(url: String) = runCatching { startPlayer(url) }.onFailure {
-        Log.w(TAG, "Reply audio failed", it)
+    private fun startVoice(): ReplyVoice {
         stopAudio()
-    }
-
-    private fun startPlayer(url: String) {
-        stopAudio()
-        val p = ExoPlayer.Builder(app).build()
-        // ExoPlayer only manages focus itself for media/game usage; ducking other audio is done by hand.
-        p.setAudioAttributes(
-            AudioAttributes.Builder().setUsage(C.USAGE_ASSISTANT).setContentType(C.AUDIO_CONTENT_TYPE_SPEECH).build(),
-            false,
+        lateinit var v: ReplyVoice
+        v = ReplyVoice(
+            app, scope, ha,
+            onStarted = { if (voice === v) _state.update { if (it.phase == Phase.Thinking || it.phase == Phase.Idle) it.copy(phase = Phase.Speaking) else it } },
+            onFinished = {
+                if (voice === v) {
+                    voice = null
+                    if (!busy) {
+                        _state.update { if (it.phase == Phase.Speaking) it.copy(phase = Phase.Idle) else it }
+                        maybeContinue()
+                    }
+                }
+            },
         )
-        audioManager.requestAudioFocus(focusRequest)
-        p.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) audioFinished(p)
-            }
-
-            override fun onPlayerError(error: PlaybackException) = audioFinished(p)
-        })
-        p.setMediaItem(MediaItem.fromUri(url))
-        p.prepare()
-        p.play()
-        player = p
-        _state.update { if (it.phase == Phase.Idle) it.copy(phase = Phase.Speaking) else it }
-    }
-
-    private fun audioFinished(p: ExoPlayer) {
-        if (player !== p) return
-        p.release()
-        player = null
-        audioManager.abandonAudioFocusRequest(focusRequest)
-        if (!busy) {
-            _state.update { if (it.phase == Phase.Speaking) it.copy(phase = Phase.Idle) else it }
-            maybeContinue()
-        }
+        voice = v
+        return v
     }
 
     private fun stopAudio() {
-        player?.let {
-            player = null
+        voice?.let {
+            voice = null
             it.stop()
-            it.release()
-            audioManager.abandonAudioFocusRequest(focusRequest)
         }
-        _state.update { if (it.phase == Phase.Speaking) it.copy(phase = Phase.Idle) else it }
+        _state.update { if (it.phase == Phase.Speaking) it.copy(phase = if (busy) Phase.Thinking else Phase.Idle) else it }
     }
 
     // ---- hand over to Claude ------------------------------------------------------------------------------------------

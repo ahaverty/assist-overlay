@@ -45,8 +45,9 @@ class AssistSession(context: Context) :
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         window.window?.let {
             WindowCompat.setDecorFitsSystemWindows(it, false)
-            @Suppress("DEPRECATION")
-            it.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+            // The panel lifts itself with imePadding(). Resizing the window too would count the
+            // keyboard twice and float the panel a keyboard's height above it.
+            it.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         }
     }
 

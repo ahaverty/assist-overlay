@@ -38,6 +38,7 @@ data class UiState(
     val level: Float = 0f,
     val speakReplies: Boolean = true,
     val notice: String? = null,
+    val showHistory: Boolean = false,
 )
 
 /**
@@ -60,6 +61,11 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private var lastTurnWasVoice = false
     private var continueConversation = false
     private var nextId = 1L
+    private var chatId = newChatId()
+    private var needsContext = false
+    private val store = History(app)
+    private val _history = MutableStateFlow(store.load())
+    val history: StateFlow<List<SavedChat>> = _history
 
     private val speech = Speech(
         app,
@@ -105,6 +111,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
     }
 
     private fun reset() {
+        saveCurrent()
+        chatId = newChatId()
         speech.cancel()
         stopAudio()
         runJob?.cancel()
@@ -113,6 +121,59 @@ class Conversation(private val app: Context, private val ha: Ha) {
         continueConversation = false
         _state.update { UiState(speakReplies = it.speakReplies) }
         cancelReopenNotice()
+    }
+
+    // ---- history ------------------------------------------------------------------------------------------------------
+
+    fun showHistory(show: Boolean) {
+        if (show) {
+            speech.cancel()
+            saveCurrent()
+        }
+        _state.update { it.copy(showHistory = show, phase = if (show && it.phase == Phase.Listening) Phase.Idle else it.phase, partial = "", level = 0f) }
+    }
+
+    /** Reopen a saved chat. The next question carries the earlier exchange if HA has likely forgotten it. */
+    fun resume(chat: SavedChat) {
+        if (chat.id == chatId) return showHistory(false)
+        reset()
+        chatId = chat.id
+        conversationId = chat.conversationId
+        lastActivity = System.currentTimeMillis()
+        needsContext = lastActivity - chat.updated > 4 * 60_000L
+        nextId = (chat.messages.maxOfOrNull { it.id } ?: 0L) + 1
+        _state.update { it.copy(messages = chat.messages, showHistory = false) }
+    }
+
+    fun deleteChat(chat: SavedChat) {
+        _history.value = _history.value.filter { it.id != chat.id }
+        store.save(_history.value)
+        if (chat.id == chatId) reset()
+    }
+
+    private fun saveCurrent() {
+        val msgs = _state.value.messages.filter { it.text.isNotBlank() }.map { it.copy(streaming = false) }
+        if (msgs.none { it.fromUser }) return
+        val chat = SavedChat(chatId, maxOf(lastActivity, 1L), conversationId, msgs)
+        _history.value = listOf(chat) + _history.value.filter { it.id != chatId }
+        store.save(_history.value)
+    }
+
+    private fun newChatId() = System.currentTimeMillis().toString(36) + (0..999).random()
+
+    /**
+     * HA keeps a conversation's memory only a few minutes. After a gap, the earlier exchange is sent
+     * along with the question (the bridge treats a leading "(Context: ...)" as background).
+     */
+    private fun withEarlierContext(text: String): String {
+        val earlier = _state.value.messages.filter { it.text.isNotBlank() && !it.error }
+        val stale = needsContext || System.currentTimeMillis() - lastActivity > 4 * 60_000L
+        needsContext = false
+        if (earlier.isEmpty() || !stale) return text
+        conversationId = null
+        val transcript = earlier.joinToString("\n") { (if (it.fromUser) "Me: " else "You: ") + speakable(it.text).replace("\n", " ") }
+            .takeLast(4000)
+        return "(Context: this continues our earlier conversation:\n$transcript)\n\n$text"
     }
 
     // ---- input --------------------------------------------------------------------------------------------------------
@@ -169,6 +230,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     private fun send(text: String, voice: Boolean) {
         runJob?.cancel()
+        val outgoing = withEarlierContext(text)
         lastActivity = System.currentTimeMillis()
         lastTurnWasVoice = voice
         continueConversation = false
@@ -186,7 +248,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         runJob = scope.launch {
             val me = coroutineContext.job
             try {
-                ha.run(text, conversationId).collect { ev ->
+                ha.run(outgoing, conversationId).collect { ev ->
                     when (ev) {
                         is PipeEvent.Delta -> {
                             edit(replyId) { it.copy(text = it.text + ev.text) }
@@ -216,6 +278,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
                 speaker?.end()
                 edit(replyId) { it.copy(streaming = false) }
                 lastActivity = System.currentTimeMillis()
+                if (runJob === me) saveCurrent()
                 if (runJob === me) {
                     runJob = null
                     _state.update { if (it.phase == Phase.Thinking) it.copy(phase = if (voice != null) Phase.Speaking else Phase.Idle) else it }

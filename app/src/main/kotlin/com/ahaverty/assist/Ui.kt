@@ -43,7 +43,10 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mic
@@ -131,20 +134,39 @@ fun AssistPanel(
             shadowElevation = 12.dp,
         ) {
             Column(Modifier.padding(top = 8.dp, bottom = 12.dp)) {
-                Header(state, onClose = onClose, onNew = convo::newChat, onOpenClaude = onOpenClaude, onToggleSpeak = convo::toggleSpeak)
-                Messages(state, onOpenUrl, Modifier.weight(1f, fill = false))
-                state.notice?.let { Notice(it, onDismiss = convo::clearNotice) }
-                InputRow(state, convo)
+                Header(
+                    state,
+                    onClose = onClose,
+                    onNew = convo::newChat,
+                    onOpenClaude = onOpenClaude,
+                    onToggleSpeak = convo::toggleSpeak,
+                    onHistory = { convo.showHistory(!state.showHistory) },
+                )
+                if (state.showHistory) {
+                    val chats by convo.history.collectAsState()
+                    HistoryList(chats, onOpen = convo::resume, onDelete = convo::deleteChat, modifier = Modifier.weight(1f, fill = false))
+                } else {
+                    Messages(state, onOpenUrl, Modifier.weight(1f, fill = false))
+                    state.notice?.let { Notice(it, onDismiss = convo::clearNotice) }
+                    InputRow(state, convo)
+                }
             }
         }
     }
 }
 
 @Composable
-private fun Header(state: UiState, onClose: () -> Unit, onNew: () -> Unit, onOpenClaude: () -> Unit, onToggleSpeak: () -> Unit) {
+private fun Header(
+    state: UiState,
+    onClose: () -> Unit,
+    onNew: () -> Unit,
+    onOpenClaude: () -> Unit,
+    onToggleSpeak: () -> Unit,
+    onHistory: () -> Unit,
+) {
     Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(Config.ASSISTANT_NAME, style = MaterialTheme.typography.titleMedium)
+            Text(if (state.showHistory) "Recent chats" else Config.ASSISTANT_NAME, style = MaterialTheme.typography.titleMedium)
             val status = when (state.phase) {
                 Phase.Listening -> "Listening…"
                 Phase.Thinking -> "Thinking…"
@@ -155,13 +177,19 @@ private fun Header(state: UiState, onClose: () -> Unit, onNew: () -> Unit, onOpe
                 Text(status ?: "", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             }
         }
-        IconButton(onClick = onToggleSpeak) {
+        IconButton(onClick = onHistory) {
+            Icon(
+                if (state.showHistory) Icons.AutoMirrored.Filled.ArrowBack else Icons.Filled.History,
+                contentDescription = if (state.showHistory) "Back to the chat" else "Recent chats",
+            )
+        }
+        if (!state.showHistory) IconButton(onClick = onToggleSpeak) {
             Icon(
                 if (state.speakReplies) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
                 contentDescription = if (state.speakReplies) "Spoken replies on" else "Spoken replies off",
             )
         }
-        if (state.messages.isNotEmpty()) {
+        if (state.messages.isNotEmpty() && !state.showHistory) {
             TextButton(onClick = onOpenClaude) {
                 Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
@@ -352,5 +380,51 @@ private fun MicButton(state: UiState, onClick: () -> Unit) {
                 },
             )
         }
+    }
+}
+
+@Composable
+private fun HistoryList(chats: List<SavedChat>, onOpen: (SavedChat) -> Unit, onDelete: (SavedChat) -> Unit, modifier: Modifier = Modifier) {
+    if (chats.isEmpty()) {
+        Text(
+            "No saved chats yet. Each conversation is kept here for ${History.DAYS} days.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(20.dp),
+        )
+        return
+    }
+    LazyColumn(modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
+        items(chats, key = { it.id }) { c ->
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable { onOpen(c) }.padding(start = 12.dp, top = 10.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(c.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        "${ago(c.updated)} · ${c.snippet}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(onClick = { onDelete(c) }) {
+                    Icon(Icons.Filled.DeleteOutline, contentDescription = "Delete", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+private fun ago(t: Long): String {
+    val mins = (System.currentTimeMillis() - t) / 60_000
+    return when {
+        mins < 1 -> "just now"
+        mins < 60 -> "${mins}m ago"
+        mins < 24 * 60 -> "${mins / 60}h ago"
+        mins < 48 * 60 -> "yesterday"
+        else -> java.text.SimpleDateFormat("EEE d MMM", java.util.Locale.UK).format(java.util.Date(t))
     }
 }

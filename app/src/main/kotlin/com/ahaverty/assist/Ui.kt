@@ -46,10 +46,12 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardTab
 import androidx.compose.animation.core.Animatable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.geometry.Offset
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -151,36 +153,66 @@ fun AssistPanel(
     val state by convo.state.collectAsState()
     BoxWithConstraints(modifier.fillMaxWidth()) {
         val maxPanel = maxHeight * 0.82f
-        // Fling the whole panel left or right to tuck it into that edge. Scrolling the messages, buttons and
-        // anything that scrolls sideways keep their own gestures; a slow drag needs to go 40% of the way.
+        // Fling the panel left or right, from anywhere on it, to tuck it into that edge. The panel watches
+        // touches before its children do (Initial pass) and only takes one over once it is clearly sideways
+        // (well past touch slop, twice as far across as down), so scrolling, taps and typing are untouched.
+        // A held mic button keeps its finger. Then it still needs a real fling or a drag 40% of the way.
         val widthPx = constraints.maxWidth.toFloat()
         val drag = remember { Animatable(0f) }
         val dragScope = rememberCoroutineScope()
+        val micDown = remember { mutableStateOf(false) }
+        // The panel stays off screen after a tuck (snapping back before the window hides flashes it);
+        // it comes back to the middle when the panel is shown again.
+        LifecycleResumeEffect(Unit) {
+            dragScope.launch { drag.snapTo(0f) }
+            onPauseOrDispose { }
+        }
         val swipeToTuck = if (onTuck == null) Modifier else Modifier.pointerInput(onTuck) {
             val tracker = VelocityTracker()
+            val claimSlop = viewConfiguration.touchSlop * 2f
             val flingSpeed = 900.dp.toPx()
-            val flingMin = 40.dp.toPx()
-            detectHorizontalDragGestures(
-                onDragStart = { tracker.resetTracking() },
-                onDragEnd = {
-                    val x = drag.value
-                    val v = tracker.calculateVelocity().x
-                    val flung = abs(v) > flingSpeed && abs(x) > flingMin && sign(v) == sign(x)
-                    if (flung || abs(x) > widthPx * 0.4f) {
-                        dragScope.launch {
-                            drag.animateTo(sign(x) * widthPx, tween(120))
-                            onTuck(x < 0)
-                            drag.snapTo(0f)
+            val flingMin = 56.dp.toPx()
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                tracker.resetTracking()
+                tracker.addPosition(down.uptimeMillis, down.position)
+                var moved = Offset.Zero
+                var claimed = false
+                var lifted = false
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) {
+                        lifted = true
+                        if (claimed) {
+                            val x = drag.value
+                            val v = tracker.calculateVelocity().x
+                            val flung = abs(v) > flingSpeed && abs(x) > flingMin && sign(v) == sign(x)
+                            dragScope.launch {
+                                if (flung || abs(x) > widthPx * 0.4f) {
+                                    drag.animateTo(sign(x) * widthPx * 1.1f, tween(140))
+                                    onTuck(x < 0)
+                                } else {
+                                    drag.animateTo(0f)
+                                }
+                            }
                         }
-                    } else {
-                        dragScope.launch { drag.animateTo(0f) }
+                        break
                     }
-                },
-                onDragCancel = { dragScope.launch { drag.animateTo(0f) } },
-            ) { change, dx ->
-                change.consume()
-                tracker.addPosition(change.uptimeMillis, change.position)
-                dragScope.launch { drag.snapTo(drag.value + dx) }
+                    val delta = change.position - change.previousPosition
+                    tracker.addPosition(change.uptimeMillis, change.position)
+                    if (!claimed) {
+                        moved += delta
+                        if (micDown.value || abs(moved.y) > viewConfiguration.touchSlop * 1.5f) break
+                        if (abs(moved.x) > claimSlop && abs(moved.x) > 2 * abs(moved.y)) claimed = true
+                        else continue
+                    }
+                    change.consume()
+                    dragScope.launch { drag.snapTo(drag.value + delta.x) }
+                }
+                if (claimed && !lifted) {
+                    dragScope.launch { drag.animateTo(0f) }
+                }
             }
         }
         Surface(
@@ -216,7 +248,7 @@ fun AssistPanel(
                     Messages(state, onOpenUrl, Modifier.weight(1f, fill = false))
                     state.notice?.let { Notice(it, onDismiss = convo::clearNotice) }
                     state.attachment?.let { AttachmentChip(it, onToggle = convo::toggleAttachment, onDrop = convo::dropAttachment) }
-                    InputRow(state, convo)
+                    InputRow(state, convo, micDown)
                 }
             }
         }
@@ -428,7 +460,7 @@ private fun Notice(text: String, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun InputRow(state: UiState, convo: Conversation) {
+private fun InputRow(state: UiState, convo: Conversation, micDown: androidx.compose.runtime.MutableState<Boolean>) {
     var typed by rememberSaveable { mutableStateOf("") }
     Row(
         Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 8.dp),
@@ -459,13 +491,13 @@ private fun InputRow(state: UiState, convo: Conversation) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
             }
         } else {
-            MicButton(state, onClick = convo::micPressed, onHoldStart = convo::holdStart, onHoldEnd = convo::holdEnd)
+            MicButton(state, micDown, onClick = convo::micPressed, onHoldStart = convo::holdStart, onHoldEnd = convo::holdEnd)
         }
     }
 }
 
 @Composable
-private fun MicButton(state: UiState, onClick: () -> Unit, onHoldStart: () -> Unit, onHoldEnd: () -> Unit) {
+private fun MicButton(state: UiState, micDown: androidx.compose.runtime.MutableState<Boolean>, onClick: () -> Unit, onHoldStart: () -> Unit, onHoldEnd: () -> Unit) {
     val listening = state.phase == Phase.Listening
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val ring by animateFloatAsState(if (listening) 1f + state.level * 0.35f else 1f, tween(90), label = "ring")
@@ -487,6 +519,7 @@ private fun MicButton(state: UiState, onClick: () -> Unit, onHoldStart: () -> Un
                     // lifts, not when it slides off the button.
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
+                        micDown.value = true
                         var held = false
                         val timer = scope.launch {
                             kotlinx.coroutines.delay(350)
@@ -499,6 +532,7 @@ private fun MicButton(state: UiState, onClick: () -> Unit, onHoldStart: () -> Un
                             if (event.changes.none { it.pressed }) break
                         }
                         timer.cancel()
+                        micDown.value = false
                         if (held) onHoldEnd() else onClick()
                     }
                 },

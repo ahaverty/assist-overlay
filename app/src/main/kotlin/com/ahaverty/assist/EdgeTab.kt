@@ -34,7 +34,8 @@ import kotlin.math.abs
  * The panel tucked into the side of the screen: a small tab on the left or right edge while the
  * conversation carries on. A spinner while Friday works, and when the answer lands the tab buzzes and
  * slides out a line of it for a few seconds, then stays marked until tapped. Tap brings the panel back;
- * dragging moves it up and down or over to the other edge. Nothing about it can end the conversation.
+ * dragging moves it up and down or over to the other edge, and dropping it on the close circle (shown at
+ * the bottom while dragging) ends the conversation. The chat stays in the history menu.
  *
  * Needs "Display over other apps" (Settings.canDrawOverlays).
  */
@@ -139,34 +140,71 @@ object EdgeTab {
             y = prefs.getInt("tab_y", (screen.height() * 0.45).toInt()).coerceIn(dp(48), screen.height() - dp(160))
         }
 
-        // Tap: open. Drag: move along the edge, or across to the other edge.
+        // Tap: open. Drag: the tab follows the finger and snaps back to the nearer edge when let go, or,
+        // dropped on the close circle that shows at the bottom while dragging, ends the chat.
         val slop = ViewConfiguration.get(app).scaledTouchSlop
-        var downX = 0f; var downY = 0f; var startY = 0; var dragging = false
+        val vibrator = app.getSystemService(VibratorManager::class.java).defaultVibrator
+        var downX = 0f; var downY = 0f; var startY = 0; var grabX = 0f; var grabY = 0f; var dragging = false
         var isLeft = left
+        var overClose = false
+        val closeCx = screen.width() / 2
+        val closeCy = screen.height() - dp(140)
         tab.setOnTouchListener { v, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    downX = e.rawX; downY = e.rawY; startY = p.y; dragging = false
+                    downX = e.rawX; downY = e.rawY; startY = p.y; dragging = false; overClose = false
+                    grabX = e.x; grabY = e.y
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (!dragging && (abs(e.rawX - downX) > slop || abs(e.rawY - downY) > slop)) dragging = true
+                    if (!dragging && (abs(e.rawX - downX) > slop || abs(e.rawY - downY) > slop)) {
+                        dragging = true
+                        CloseTarget.show()
+                    }
                     if (dragging) {
-                        p.y = (startY + (e.rawY - downY).toInt()).coerceIn(dp(48), screen.height() - dp(160))
                         val side = e.rawX < screen.width() / 2
                         if (side != isLeft) {
                             isLeft = side
                             p.gravity = Gravity.TOP or (if (side) Gravity.START else Gravity.END)
                             shape(side); arrange(side)
                         }
+                        val near = CloseTarget.hit(e.rawX, e.rawY)
+                        if (near != overClose) {
+                            overClose = near
+                            CloseTarget.highlight(near)
+                            if (near) runCatching { vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)) }
+                        }
+                        // Over the circle the tab sits on it; anywhere else it hangs off the finger.
+                        val leftEdge = if (near) closeCx - v.width / 2f else e.rawX - grabX
+                        val top = if (near) closeCy - v.height / 2f else e.rawY - grabY
+                        val fromEdge = (if (isLeft) leftEdge else screen.width() - v.width - leftEdge).toInt()
+                        p.x = fromEdge.coerceIn(0, maxOf(0, screen.width() - v.width))
+                        p.y = (if (near) top.toInt() else startY + (e.rawY - downY).toInt())
+                            .coerceIn(dp(48), screen.height() - v.height)
                         runCatching { wm.updateViewLayout(v, p) }
                     }
                     true
                 }
-                MotionEvent.ACTION_UP -> {
-                    if (dragging) {
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (dragging && overClose && e.actionMasked == MotionEvent.ACTION_UP) {
+                        runCatching { vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK)) }
+                        CloseTarget.hide()
+                        v.animate().scaleX(0f).scaleY(0f).alpha(0f).setDuration(180)
+                            .withEndAction { App.convo.closeTucked() }.start()
+                    } else if (dragging) {
+                        CloseTarget.hide()
+                        p.y = p.y.coerceIn(dp(48), screen.height() - dp(160))
                         prefs.edit().putInt("tab_y", p.y).putBoolean("tab_left", isLeft).apply()
-                    } else {
+                        ValueAnimator.ofInt(p.x, 0).apply {
+                            duration = 220
+                            interpolator = OvershootInterpolator()
+                            addUpdateListener {
+                                p.x = maxOf(0, it.animatedValue as Int)
+                                if (root === v) runCatching { wm.updateViewLayout(v, p) }
+                            }
+                            start()
+                        }
+                    } else if (e.actionMasked == MotionEvent.ACTION_UP) {
                         v.performClick()
                         remove()
                         reopenAssist(app)
@@ -177,14 +215,14 @@ object EdgeTab {
             }
         }
 
-        runCatching { wm.addView(tab, p) }.onFailure { return }
+        CloseTarget.attach(app, closeCx, closeCy, surface, onSurface)
+        runCatching { wm.addView(tab, p) }.onFailure { CloseTarget.remove(); return }
         root = tab
         params = p
         // Slide in from the edge.
         tab.translationX = if (left) -dp(80).toFloat() else dp(80).toFloat()
         tab.animate().translationX(0f).setDuration(260).setInterpolator(OvershootInterpolator()).start()
 
-        val vibrator = app.getSystemService(VibratorManager::class.java).defaultVibrator
         var wasWorking = false
         var finished = false
         watch = scope.launch {
@@ -230,11 +268,96 @@ object EdgeTab {
     }
 
     fun remove() {
+        CloseTarget.remove()
         watch?.cancel(); watch = null
         hideLabel?.cancel(); hideLabel = null
         val v = root ?: return
         root = null
         params = null
+        runCatching { v.context.getSystemService(WindowManager::class.java).removeView(v) }
+    }
+}
+
+/** The close circle that shows near the bottom of the screen while the edge tab is being dragged. */
+private object CloseTarget {
+    private var view: TextView? = null
+    private var cx = 0
+    private var cy = 0
+    private var radius = 0
+    private var shown = false
+
+    /** Added hidden before the tab, so the tab stays on top of it when it snaps on. */
+    fun attach(context: Context, centreX: Int, centreY: Int, surface: Int, onSurface: Int) {
+        remove()
+        val wm = context.getSystemService(WindowManager::class.java)
+        fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), context.resources.displayMetrics).toInt()
+        val size = dp(64)
+        cx = centreX; cy = centreY
+        // Generous: the finger only has to get close, then the tab snaps onto the circle.
+        radius = dp(72)
+        val circle = TextView(context).apply {
+            text = "✕"
+            textSize = 24f
+            gravity = Gravity.CENTER
+            setTextColor(onSurface)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(surface)
+                setStroke(dp(2), (onSurface and 0x00FFFFFF) or 0x40000000)
+            }
+            elevation = dp(6).toFloat()
+            contentDescription = "Drop here to close"
+        }
+        val p = WindowManager.LayoutParams(
+            size, size,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = centreX - size / 2
+            y = centreY - size / 2
+        }
+        runCatching { wm.addView(circle, p) }.onFailure { return }
+        view = circle
+        circle.alpha = 0f
+        circle.visibility = View.INVISIBLE
+        shown = false
+    }
+
+    fun show() {
+        val v = view ?: return
+        if (shown) return
+        shown = true
+        v.visibility = View.VISIBLE
+        v.scaleX = 1f; v.scaleY = 1f
+        v.translationY = v.height * 0.6f
+        v.animate().alpha(1f).translationY(0f).setDuration(180).start()
+    }
+
+    fun hide() {
+        val v = view ?: return
+        if (!shown) return
+        shown = false
+        v.animate().alpha(0f).setDuration(150).withEndAction { if (!shown) v.visibility = View.INVISIBLE }.start()
+    }
+
+    fun hit(x: Float, y: Float): Boolean {
+        if (view == null || !shown) return false
+        val dx = x - cx
+        val dy = y - cy
+        return dx * dx + dy * dy <= radius.toFloat() * radius
+    }
+
+    fun highlight(on: Boolean) {
+        val s = if (on) 1.3f else 1f
+        view?.animate()?.scaleX(s)?.scaleY(s)?.setDuration(120)?.start()
+    }
+
+    fun remove() {
+        val v = view ?: return
+        view = null
         runCatching { v.context.getSystemService(WindowManager::class.java).removeView(v) }
     }
 }

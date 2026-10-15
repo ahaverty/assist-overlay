@@ -11,6 +11,7 @@ to one of your Home Assistant Assist pipelines.
 - The conversation stays for 5 minutes after the last question or reply (`Config.KEEP_MS`), then the next
   long-press starts a new one (the old one is in the history menu); a quiet notification reopens it meanwhile.
   Fling the panel sideways to tuck it into a tab on the screen edge while a slow answer comes in (kept 30 minutes).
+  Drag the tab onto the close circle at the bottom of the screen to end that chat (it stays in the history).
 - `![Name](ha:camera.x)` lines in a reply show as a camera picture or a state card.
 - "Continue in Claude" shares the transcript to the Claude app.
 

@@ -203,6 +203,14 @@ class Conversation(private val app: Context, private val ha: Ha) {
         return true
     }
 
+    /** The edge tab dragged onto its close target: done with this chat (it stays in the history menu). */
+    fun closeTucked() {
+        tucked = false
+        main.removeCallbacks(idleCheck)
+        EdgeTab.remove()
+        reset()
+    }
+
     /** The close button: stop talking and listening, keep the conversation for later. */
     fun close() {
         stopListening()

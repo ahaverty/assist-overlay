@@ -93,6 +93,7 @@ class WhisperSpeech(
     /** Whisper's draft, then whatever Google has heard since it was taken (minus any words both have). */
     private fun display(): String {
         if (draft.isEmpty()) return shown
+        LiveWords.tailAfter(shown, draft, draftGoogle)?.let { return LiveWords.merge(draft, it) }
         return LiveWords.merge(draft, LiveWords.after(shown, draftGoogle))
     }
 

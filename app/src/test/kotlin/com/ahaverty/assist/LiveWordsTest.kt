@@ -30,6 +30,20 @@ class LiveWordsTest {
     }
 
     @Test
+    fun tailAfterFindsTheDraftsEndInGoogleText() {
+        // A real turn: Whisper had "set it higher then" before Google showed past "yeah go".
+        assertEquals("", LiveWords.tailAfter("yeah go and sell it higher then", "Yeah, go and set it higher then.", "yeah go"))
+        assertEquals("please", LiveWords.tailAfter("yeah go and sell it higher then please", "Yeah, go and set it higher then.", "yeah go"))
+        // The draft's last words appear earlier too: only from about where Google was counts.
+        assertEquals(
+            "and the hall",
+            LiveWords.tailAfter("turn on the lights then turn on the lights and the hall", "turn on the lights then turn on the lights", "turn on the lights then turn"),
+        )
+        // A clipped last word can't be found: the caller falls back to merge().
+        assertEquals(null, LiveWords.tailAfter("the entire paragraph as if I'm just", "the entire paragraph as if I", "the entire"))
+    }
+
+    @Test
     fun mergeTakesACumulativeFinal() {
         assertEquals("what's the weather like tomorrow", LiveWords.merge("what's the weather", "what's the weather like tomorrow"))
     }

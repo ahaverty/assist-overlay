@@ -52,6 +52,25 @@ object LiveWords {
         return b.drop(a.size).joinToString(" ")
     }
 
+    /**
+     * Google's words in [now] that come after a Whisper [draft]'s last words, or null when they can't be found.
+     * Google runs up to a second behind the audio, so its text when the draft's audio was taken ([then]) is
+     * often missing the draft's last words: those are looked for in [now] instead, from about where [then]
+     * ended. Two words at least, so a lone "the" or "I" can't match the wrong place.
+     */
+    fun tailAfter(now: String, draft: String, then: String): String? {
+        val b = words(now)
+        val kb = b.map(::key)
+        val kd = words(draft).map(::key).filter { it.isNotEmpty() }
+        val from = maxOf(0, words(then).size - 1)
+        for (k in minOf(3, kd.size) downTo 2) {
+            val last = kd.takeLast(k)
+            val end = (maxOf(k, from)..kb.size).firstOrNull { kb.subList(it - k, it) == last } ?: continue
+            return b.drop(end).joinToString(" ")
+        }
+        return null
+    }
+
     /** True when [text] starts with the same first words as [other]: a recognizer repeating, not moving on. */
     fun startsLike(text: String, other: String): Boolean {
         val a = words(text).map(::key)

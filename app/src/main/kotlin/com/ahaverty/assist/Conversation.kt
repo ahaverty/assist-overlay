@@ -104,6 +104,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
     /** What Alan had already said when he grabbed the mic button mid-sentence (see [holdStart]). */
     private var carry = ""
     private var bargeRestarts = 0
+    /** Listening because talk-over stopped the reply: the final words are checked against the reply once more. */
+    private var interrupted = false
 
     private val speech = Speech(
         app,
@@ -420,6 +422,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     }
 
     private fun stopListening() {
+        interrupted = false
         bargeIn = false
         if (micBusy || _state.value.phase == Phase.Listening) {
             speech.cancel()
@@ -447,6 +450,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         if (!isInterruption(p)) return
         // Alan is talking over the reply: stop it and carry on with this as his next question.
         bargeIn = false
+        interrupted = true
         stopAudio()
         feedback.tick()
         _state.update { it.copy(phase = Phase.Listening, partial = p, notice = null) }
@@ -464,6 +468,10 @@ class Conversation(private val app: Context, private val ha: Ha) {
         _state.update { it.copy(partial = "", level = 0f, transcribing = false, holding = false, phase = if (busy) Phase.Thinking else if (it.phase == Phase.Listening) Phase.Idle else it.phase) }
         val said = text?.let { withCarry(it) } ?: carry.takeIf { it.isNotEmpty() }
         carry = ""
+        // A few words can pass for talk-over; the whole sentence being the reply's own voice means it was the echo.
+        val echo = interrupted && said != null && Echo.isEcho(said, lastSpoken())
+        interrupted = false
+        if (echo) return notice("That was my own voice, so I didn't send it.")
         if (said != null) feedback.heard() else feedback.nothing()
         when {
             said != null -> send(said, spoken = true)
@@ -471,16 +479,10 @@ class Conversation(private val app: Context, private val ha: Ha) {
         }
     }
 
-    /** The reply's own voice comes back through the mic, so only words that aren't in the reply count. */
-    private fun isInterruption(heard: String): Boolean {
-        val words = heard.lowercase().split(Regex("[^a-z0-9']+")).filter { it.length > 1 }
-        if (words.isEmpty()) return false
-        if (words.first() in setOf("stop", "wait", "friday", "cancel", "hang", "hold")) return true
-        val reply = _state.value.messages.lastOrNull { !it.fromUser }?.text.orEmpty()
-        val spoken = speakable(reply).lowercase().split(Regex("[^a-z0-9']+")).toSet()
-        val unknown = words.count { it !in spoken }
-        return unknown >= 2 && unknown * 2 >= words.size
-    }
+    /** The reply's own voice comes back through the mic, so only words that aren't in the reply count (see [Echo]). */
+    private fun isInterruption(heard: String): Boolean = Echo.isInterruption(heard, lastSpoken())
+
+    private fun lastSpoken() = speakable(_state.value.messages.lastOrNull { !it.fromUser }?.text.orEmpty())
 
     private fun startBargeIn() {
         if (!bargeInEnabled || !visible || !hasMic() || micBusy) return

@@ -80,10 +80,11 @@ object Whisper {
         samples: FloatArray,
         threads: Int = 4,
         audioCtx: Int = audioCtxFor(samples.size),
+        previous: String = "",
     ): String = withContext(worker) {
         val ctx = ensure(context, m)
         val t = SystemClock.elapsedRealtime()
-        val raw = nativeTranscribe(ctx, samples, threads, prompt(), audioCtx)
+        val raw = nativeTranscribe(ctx, samples, threads, prompt(previous), audioCtx)
         val ms = SystemClock.elapsedRealtime() - t
         Log.i(TAG, "${m.label}: ${samples.size / RATE.toFloat()} s audio in $ms ms: \"$raw\"")
         context.getSharedPreferences("ui", Context.MODE_PRIVATE).edit()
@@ -92,9 +93,13 @@ object Whisper {
         clean(raw)
     }
 
-    /** The assistant's name plus the user's own words (see [Setup.whisperWords]). */
-    private fun prompt() = listOf(Setup.assistantName, Setup.whisperWords).filter { it.isNotBlank() }.joinToString(", ")
+    /**
+     * The assistant's name plus the user's own words (see [Setup.whisperWords]), then the last words of
+     * [previous] (what was said just before this audio), so a clip that carries on a sentence reads on from it.
+     */
+    private fun prompt(previous: String = "") = listOf(Setup.assistantName, Setup.whisperWords).filter { it.isNotBlank() }.joinToString(", ")
         .let { if (it.isEmpty() || it.endsWith(".")) it else "$it." }
+        .let { names -> listOf(names, previous.split(' ').takeLast(40).joinToString(" ")).filter { it.isNotBlank() }.joinToString(" ") }
 
     /** Whisper's non-speech markers ([BLANK_AUDIO], (music)) and stray whitespace. */
     fun clean(text: String) = text.replace(Regex("""\[[^\]]*]|\([^)]*\)"""), " ").replace(Regex("\\s+"), " ").trim()

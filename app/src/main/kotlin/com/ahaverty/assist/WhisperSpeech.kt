@@ -30,9 +30,12 @@ private const val LIVE = "AssistLive"
  * One listening turn with Whisper. The app records the mic itself and decides when Alan has finished:
  * a real pause ([PAUSE_MS] of quiet), or letting go of the mic button in hold-to-talk. Then the whole
  * clip is transcribed on the phone. The same audio goes to Google's recognizer only to show live words;
- * Google never ends the turn. At each short breath the clip so far is also transcribed by Whisper ("drafts"),
- * so the shown words settle to what will be sent while Alan is still talking, with only the newest words
- * Google's. When the turn ends with no speech after the last draft, that draft is sent as it is.
+ * Google never ends the turn. At each short breath (or every few seconds of unbroken talk, cut at the last
+ * gap between words) the clip so far is also transcribed by Whisper ("drafts"), so the shown words settle to
+ * what will be sent while Alan is still talking, with only the newest words Google's. Once a draft ending in
+ * quiet covers [SETTLE_S] seconds, its text is settled: later drafts and the final transcription only redo the
+ * audio after it (with the settled text as Whisper's prompt), so they stay quick however long Alan talks.
+ * When the turn ends with no speech after the last draft, that draft is sent as it is.
  */
 class WhisperSpeech(
     private val context: Context,
@@ -69,7 +72,11 @@ class WhisperSpeech(
     private var draft = ""
     private var draftDone = 0 // samples [draft] covers
     private var draftGoogle = "" // Google's words when the draft's audio was taken
+    private var settled = "" // Whisper's text for samples [0, settledAt): never transcribed again
+    private var settledAt = 0
+    private val heard = ArrayList<Pair<Int, String>>() // (samples, shown) at each Google update
     @Volatile private var lastSpeechSample = 0
+    @Volatile private var lastGapSample = 0 // middle of the newest short gap between words
     private var t0 = 0L
     private var replaying = false
 
@@ -77,6 +84,7 @@ class WhisperSpeech(
     private fun live(msg: String) = Log.d(LIVE, "+${SystemClock.elapsedRealtime() - t0} $msg")
 
     private fun show() {
+        heard += samples.count to shown
         val d = display()
         live("show: $d")
         onPartial(d)
@@ -108,7 +116,11 @@ class WhisperSpeech(
         draftDone = 0
         draftSnap = 0
         draftGoogle = ""
+        settled = ""
+        settledAt = 0
+        heard.clear()
         lastSpeechSample = 0
+        lastGapSample = 0
         t0 = SystemClock.elapsedRealtime()
         replaying = replay != null
         if (replay != null) {
@@ -191,14 +203,22 @@ class WhisperSpeech(
                     lastSpeechSample = samples.count
                 } else {
                     silenceMs += 20
+                    if (silenceMs == GAP_MS) lastGapSample = samples.count - RATE * GAP_MS / 2000
                 }
                 main.post { onLevel((rms / 3000).toFloat().coerceIn(0f, 1f)) }
                 val now = SystemClock.elapsedRealtime()
                 val elapsed = now - started
-                // A breath, or a long run of talk with no breath in it: settle the words so far.
-                if (speechMs >= 200 && (silenceMs == DRAFT_PAUSE_MS || (loud && now - lastDraftAt > 8000))) {
+                // A breath: draft the words so far. A long run of talk with no breath in it: draft up to the
+                // last gap between words, so no word is cut in half.
+                if (speechMs >= 200 && silenceMs == DRAFT_PAUSE_MS) {
                     lastDraftAt = now
-                    main.post { draftNow() }
+                    val end = samples.count
+                    main.post { draftNow(end, quiet = true) }
+                } else if (speechMs >= 200 && loud && now - lastDraftAt > DRAFT_EVERY_MS) {
+                    lastDraftAt = now
+                    val gap = lastGapSample
+                    val end = samples.count
+                    main.post { if (gap > end - RATE * 3 && gap > draftSnap) draftNow(gap, quiet = true) else draftNow(end, quiet = false) }
                 }
                 when {
                     hold -> if (elapsed > 120_000) recording = false // held: only letting go ends it
@@ -213,29 +233,41 @@ class WhisperSpeech(
         }
     }
 
-    /** Transcribe the clip so far in the background and show it as settled words (one draft at a time). */
-    private fun draftNow() {
+    /**
+     * Transcribe the audio up to [end] in the background and show it as settled words (one draft at a time).
+     * [quiet]: the audio ends between words, so the draft may become [settled].
+     */
+    private fun draftNow(end: Int, quiet: Boolean) {
         if (finished || !recording || draftJob?.isActive == true) return
-        if (lastSpeechSample <= draftSnap) return // nothing said since the last draft
-        val audio = samples.toFloats()
+        if (lastSpeechSample <= draftSnap || end <= draftSnap) return // nothing said since the last draft
+        val from = settledAt
+        if (end - from < RATE) return
+        val audio = samples.toFloats(from, end)
         val t = turn
-        draftSnap = audio.size
-        // Taken with the audio, not when Whisper is done: words said while it works are not in the draft.
-        // Google may still be a word behind here; display() drops any words the two then both have.
-        val googleThen = shown
-        live("draft start ${audio.size / RATE.toFloat()} s")
+        draftSnap = end
+        // Google's words when it had heard about this much (it can be a word behind: display() drops repeats).
+        val googleThen = googleAt(end)
+        val before = settled
+        live("draft start ${from / RATE.toFloat()}-${end / RATE.toFloat()} s")
         draftJob = scope.launch {
-            val text = runCatching { Whisper.transcribe(context, model(), audio) }
+            val text = runCatching { Whisper.transcribe(context, model(), audio, previous = before) }
                 .onFailure { Log.w(TAG, "draft failed", it) }
                 .getOrNull()?.takeIf { it.isNotBlank() } ?: return@launch
             live("draft: $text")
             if (t != turn || finished) return@launch
-            draft = text
-            draftDone = audio.size
+            draft = join(before, text)
+            draftDone = end
             draftGoogle = googleThen
+            if ((quiet && end - from >= SETTLE_S * RATE) || end - from >= MAX_CHUNK_S * RATE) {
+                settled = draft
+                settledAt = end
+            }
             show()
         }
     }
+
+    /** What Google showed when it had been given [end] samples. */
+    private fun googleAt(end: Int) = heard.lastOrNull { it.first <= end }?.second ?: ""
 
     private fun captured(heardSpeech: Boolean) {
         val fallback = display()
@@ -244,20 +276,23 @@ class WhisperSpeech(
         if (finished) return
         if (!heardSpeech && fallback.isBlank()) return finish(null, null)
         if (!replaying) keepTurn(samples.toShorts())
-        val audio = samples.toFloats()
-        // The last draft already heard everything said (only the closing quiet came after it): use it.
-        val drafted = draftJob?.takeIf { draftSnap >= lastSpeechSample }
         val t = turn
         onTranscribing()
         scope.launch {
-            drafted?.join()
+            // Drafts are short now: let the running one finish, as it may settle more of the clip.
+            draftJob?.join()
             if (t != turn) return@launch
-            if (drafted != null && draft.isNotBlank() && draftDone >= lastSpeechSample) return@launch finish(draft, null)
-            val text = runCatching { Whisper.transcribe(context, model(), audio) }
-                .onFailure { Log.w(TAG, "whisper failed", it) }
-                .getOrNull()
+            // The last draft already heard everything said (only the closing quiet came after it): use it.
+            if (draft.isNotBlank() && draftDone >= lastSpeechSample) return@launch finish(draft, null)
+            // The closing quiet is left out: Whisper makes up words ("Thanks for watching.") in silence.
+            val end = minOf(samples.count, lastSpeechSample + RATE / 2)
+            val before = settled
+            val text = if (end - settledAt < RATE / 4) "" else runCatching {
+                Whisper.transcribe(context, model(), samples.toFloats(settledAt, end), previous = before)
+            }.onFailure { Log.w(TAG, "whisper failed", it) }.getOrNull()
             if (t != turn) return@launch
-            finish(text?.takeIf { it.isNotBlank() } ?: fallback.takeIf { it.isNotBlank() }, null)
+            val said = if (text == null) null else join(before, text)
+            finish(said?.takeIf { it.isNotBlank() } ?: fallback.takeIf { it.isNotBlank() }, null)
         }
     }
 
@@ -399,14 +434,29 @@ class WhisperSpeech(
         /** Quiet that ends a turn when not holding the button: long enough for a breath mid-sentence. */
         const val PAUSE_MS = 2200
 
-        /** Quiet that starts a Whisper draft (a multiple of the 20 ms mic chunk). */
-        const val DRAFT_PAUSE_MS = 600
+        /** Quiet that starts a Whisper draft (multiples of the 20 ms mic chunk), and a gap between words. */
+        const val DRAFT_PAUSE_MS = 500
+        const val GAP_MS = 140
 
-        /** True when [next] is a fresh utterance, not a revision of [old]: much shorter, with a different start. */
+        /** Unbroken talk is drafted this often. */
+        const val DRAFT_EVERY_MS = 4000
+
+        /** A draft ending in quiet that covers this many seconds is settled; any draft at [MAX_CHUNK_S]. */
+        const val SETTLE_S = 8
+        const val MAX_CHUNK_S = 20
+
+        /** [before] then [text], Whisper's settled words and the ones after them. */
+        fun join(before: String, text: String) = if (before.isEmpty()) text.trim() else "$before ${text.trim()}".trim()
+
+        /**
+         * True when [next] is a fresh utterance, not a revision of [old]: Google started again after a pause in
+         * the same session. It begins with other words and is no longer than [old]. (Revisions keep the start;
+         * a fresh utterance can be long at once when Google was quiet for a while, so length alone won't do.)
+         */
         fun restarted(old: String, next: String): Boolean {
-            val a = old.lowercase().split(' ').filter { it.isNotBlank() }
-            val b = next.lowercase().split(' ').filter { it.isNotBlank() }
-            return a.size >= 3 && b.size * 2 < a.size && b.take(2) != a.take(minOf(2, b.size))
+            val a = old.split(' ').filter { it.isNotBlank() }
+            val b = next.split(' ').filter { it.isNotBlank() }
+            return a.size >= 3 && b.isNotEmpty() && b.size <= a.size && !LiveWords.startsLike(next, old)
         }
     }
 }
@@ -428,7 +478,10 @@ private class ShortArrayBuilder {
         size += n
     }
 
-    @Synchronized fun toFloats() = FloatArray(size) { data[it] / 32768f }
+    @Synchronized fun toFloats(from: Int = 0, to: Int = size): FloatArray {
+        val end = minOf(to, size)
+        return FloatArray(maxOf(0, end - from)) { data[from + it] / 32768f }
+    }
 
     @Synchronized fun toShorts() = data.copyOf(size)
 }

@@ -243,6 +243,7 @@ class WhisperSpeech(
         if (lastSpeechSample <= draftSnap || end <= draftSnap) return // nothing said since the last draft
         val from = settledAt
         if (end - from < RATE) return
+        if (from > 0 && newSinceSettled() == 0) return // breath or room noise (see newSinceSettled)
         val audio = samples.toFloats(from, end)
         val t = turn
         draftSnap = end
@@ -286,6 +287,16 @@ class WhisperSpeech(
 
     private fun words(s: String) = s.split(' ').count { it.isNotBlank() }
 
+    /**
+     * Google's words after the settled text. None means the audio since then was breath or room noise, which
+     * Whisper on its own turns into made-up sentences ("I'm going to try this."), so it isn't asked.
+     */
+    private fun newSinceSettled(): Int {
+        if (settled.isEmpty()) return words(shown)
+        val then = googleAt(settledAt)
+        return words(LiveWords.tailAfter(shown, settled, then) ?: LiveWords.after(shown, then))
+    }
+
     /** What Google showed when it had been given [end] samples. */
     private fun googleAt(end: Int) = heard.lastOrNull { it.first <= end }?.second ?: ""
 
@@ -307,7 +318,9 @@ class WhisperSpeech(
             // The closing quiet is left out: Whisper makes up words ("Thanks for watching.") in silence.
             val end = minOf(samples.count, lastSpeechSample + RATE / 2)
             val before = settled
-            val text = if (end - settledAt < RATE / 4) "" else runCatching {
+            // Nothing new from Google a second after the last sound (it runs up to a second behind): only noise.
+            val noise = settledAt > 0 && samples.count - lastSpeechSample >= RATE && newSinceSettled() == 0
+            val text = if (end - settledAt < RATE / 4 || noise) "" else runCatching {
                 transcribeChecked(samples.toFloats(settledAt, end), settledAt, end, before)
             }.onFailure { Log.w(TAG, "whisper failed", it) }.getOrNull()
             if (t != turn) return@launch
@@ -522,13 +535,19 @@ class ReplayReceiver : android.content.BroadcastReceiver() {
         val pcm = runCatching { WhisperSpeech.readWav(file) }.getOrNull()
             ?: return run { Log.w(LIVE, "can't read $file") }
         Log.d(LIVE, "replay ${file.name}: ${pcm.size / RATE.toFloat()} s")
+        // Awake as in a real turn (Conversation keeps the CPU up while listening), or Whisper crawls.
+        val wake = (context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager)
+            .newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "assist:replay").apply { acquire(pcm.size / RATE * 1000L + 30_000) }
         running?.cancel()
         running = WhisperSpeech(
             context.applicationContext,
             model = { Whisper.Model.SMALL },
             onPartial = {},
             onLevel = {},
-            onDone = { text, error -> Log.d(LIVE, "replay done: $text ${error.orEmpty()}") },
+            onDone = { text, error ->
+                Log.d(LIVE, "replay done: $text ${error.orEmpty()}")
+                if (wake.isHeld) wake.release()
+            },
         ).also { it.start(holdToTalk = intent.getBooleanExtra("hold", false), replay = pcm) }
     }
 

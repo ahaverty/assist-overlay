@@ -37,7 +37,7 @@ class ShareActivity : ComponentActivity() {
         val uris = if (intent.action == Intent.ACTION_SEND_MULTIPLE) {
             intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
         } else {
-            listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM))
+            listOfNotNull(intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
         }
         // Read them before finishing: the sharing app's read grant ends with this activity.
         lifecycleScope.launch {

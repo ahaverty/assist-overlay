@@ -107,6 +107,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.offset
 import androidx.compose.material.icons.filled.Screenshot
+import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.runtime.State
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Rect
@@ -423,7 +428,7 @@ private fun Messages(state: UiState, onOpenUrl: (String) -> Unit, modifier: Modi
             }
         }
         items(state.messages, key = { it.id }) { m ->
-            if (m.fromUser) UserBubble(m.text, screen = m.screen) else Reply(m, onOpenUrl)
+            if (m.fromUser) UserBubble(m.text, screen = m.screen, photos = m.photos) else Reply(m, onOpenUrl)
         }
         if (state.partial.isNotEmpty()) {
             item(key = "partial") { UserBubble(state.partial, live = true) }
@@ -432,9 +437,10 @@ private fun Messages(state: UiState, onOpenUrl: (String) -> Unit, modifier: Modi
 }
 
 @Composable
-private fun UserBubble(text: String, live: Boolean = false, screen: String? = null) {
+private fun UserBubble(text: String, live: Boolean = false, screen: String? = null, photos: List<String> = emptyList()) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
-        Surface(
+        if (photos.isNotEmpty()) SentPhotos(photos)
+        if (text.isNotBlank()) Surface(
             shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp),
             color = if (live) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f) else MaterialTheme.colorScheme.primaryContainer,
             modifier = Modifier.widthIn(max = 300.dp),
@@ -543,6 +549,7 @@ private fun InputRow(
 ) {
     var typed by rememberSaveable { mutableStateOf("") }
     val screen = state.attachment?.takeIf { !it.shared }
+    if (state.photos.isNotEmpty()) PhotoStrip(state.photos, onRemove = convo::removePhoto)
     Row(
         Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -553,7 +560,18 @@ private fun InputRow(
                 if (typed.isEmpty() && it.isNotEmpty()) convo.typingStarted()
                 typed = it
             },
-            placeholder = { Text(if (screen?.on == true) "Ask about this screen" else "Ask ${Setup.assistantName}", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            placeholder = {
+                Text(
+                    when {
+                        state.photos.isNotEmpty() -> "What about ${if (state.photos.size == 1) "it" else "them"}?"
+                        screen?.on == true -> "Ask about this screen"
+                        else -> "Ask ${Setup.assistantName}"
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+            leadingIcon = { PhotoButton(onPick = convo::pickPhotos) },
             trailingIcon = {
                 if (screen == null) NoScreenButton(convo::noScreen)
                 else ScreenButton(screen, onGrab = { button -> convo.grabScreen(); onGrab?.invoke(button, screen.shot) }, onDrop = convo::toggleAttachment)
@@ -708,6 +726,74 @@ private fun ScreenButton(a: Attachment, onGrab: (LayoutCoordinates) -> Unit, onD
                 if (img != null) Image(img, contentDescription = label, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                 else Icon(Icons.Filled.Smartphone, contentDescription = label, modifier = Modifier.size(16.dp))
             }
+        }
+    }
+}
+
+/** The one photo button in the text bar: a small menu picks the photo picker (several at once) or the camera. */
+@Composable
+private fun PhotoButton(onPick: (camera: Boolean) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }) {
+            Icon(Icons.Filled.AddPhotoAlternate, contentDescription = "Add photos", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text("Photos") },
+                leadingIcon = { Icon(Icons.Filled.PhotoLibrary, contentDescription = null) },
+                onClick = { open = false; onPick(false) },
+            )
+            DropdownMenuItem(
+                text = { Text("Camera") },
+                leadingIcon = { Icon(Icons.Filled.PhotoCamera, contentDescription = null) },
+                onClick = { open = false; onPick(true) },
+            )
+        }
+    }
+}
+
+/** Photos waiting to go with the next question, above the text bar. Dimmed while uploading; tap one to take it out. */
+@Composable
+private fun PhotoStrip(photos: List<Photo>, onRemove: (Photo) -> Unit) {
+    LazyRow(
+        Modifier.fillMaxWidth().padding(top = 6.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(photos, key = { it.file.path }) { p ->
+            val img = remember(p.thumb) { p.thumb.asImageBitmap() }
+            Box(
+                Modifier.size(64.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .border(1.5.dp, if (p.failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+                    .clickable { onRemove(p) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(img, contentDescription = "Photo going with your question. Tap to remove", contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().graphicsLayer { alpha = if (p.id == null && !p.failed) 0.55f else 1f })
+                when {
+                    p.failed -> Icon(Icons.Filled.ErrorOutline, contentDescription = "Didn't upload, will try again", tint = MaterialTheme.colorScheme.error)
+                    p.id == null -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
+                }
+                Icon(Icons.Filled.Close, contentDescription = null, tint = Color.White,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(3.dp).size(16.dp).clip(RoundedCornerShape(8.dp)).background(Color.Black.copy(alpha = 0.45f)))
+            }
+        }
+    }
+}
+
+/** Photos that went with a question, in its bubble (read from app storage; gone once the chat leaves the history). */
+@Composable
+private fun SentPhotos(paths: List<String>) {
+    LazyRow(
+        Modifier.widthIn(max = 300.dp).padding(bottom = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+    ) {
+        items(paths) { path ->
+            val thumb = remember(path) { Photos.thumb(java.io.File(path), edge = 160)?.asImageBitmap() }
+            if (thumb != null) Image(thumb, contentDescription = "Photo you sent", contentScale = ContentScale.Crop,
+                modifier = Modifier.size(72.dp).clip(RoundedCornerShape(12.dp)))
         }
     }
 }

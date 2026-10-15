@@ -33,7 +33,8 @@ class History(context: Context) {
                 conversationId = o.optString("conversationId").takeIf { it.isNotBlank() },
                 messages = (0 until msgs.length()).map { j ->
                     val m = msgs.getJSONObject(j)
-                    Msg(m.getLong("id"), m.getBoolean("user"), m.getString("text"), error = m.optBoolean("error"))
+                    val photos = m.optJSONArray("photos")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+                    Msg(m.getLong("id"), m.getBoolean("user"), m.getString("text"), error = m.optBoolean("error"), photos = photos)
                 },
             )
         }.filter { it.updated >= cutoff }
@@ -47,7 +48,10 @@ class History(context: Context) {
                 .put("updated", c.updated)
                 .put("conversationId", c.conversationId ?: "")
                 .put("messages", JSONArray().apply {
-                    c.messages.forEach { m -> put(JSONObject().put("id", m.id).put("user", m.fromUser).put("text", m.text).put("error", m.error)) }
+                    c.messages.forEach { m ->
+                        put(JSONObject().put("id", m.id).put("user", m.fromUser).put("text", m.text).put("error", m.error)
+                            .apply { if (m.photos.isNotEmpty()) put("photos", JSONArray(m.photos)) })
+                    }
                 }))
         }
         val tmp = File(file.path + ".tmp")

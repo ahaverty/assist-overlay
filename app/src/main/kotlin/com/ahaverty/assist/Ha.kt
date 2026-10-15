@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
@@ -119,6 +120,27 @@ class Ha(private val auth: Auth) {
             if (!r.isSuccessful) throw IOException("$path ${r.code}")
             r.body!!.bytes()
         }
+    }
+
+    /**
+     * Put a photo in HA's image store (the one person pictures use) and return its id. HA serves it to the LAN at
+     * /api/image/serve/<id>/original, which is where the friday-voice bridge picks it up; [deleteImage] once answered.
+     */
+    suspend fun uploadImage(file: java.io.File): String = withContext(Dispatchers.IO) {
+        val base = auth.base()
+        val token = auth.accessToken(base)
+        val body = okhttp3.MultipartBody.Builder().setType(okhttp3.MultipartBody.FORM)
+            .addFormDataPart("file", file.name, file.asRequestBody("image/jpeg".toMediaType()))
+            .build()
+        auth.http.newCall(Request.Builder().url("$base/api/image/upload").header("Authorization", "Bearer $token").post(body).build())
+            .execute().use { r ->
+                if (!r.isSuccessful) throw IOException("image upload ${r.code}")
+                JSONObject(r.body!!.string()).getString("id")
+            }
+    }
+
+    suspend fun deleteImage(id: String) {
+        command(JSONObject().put("type", "image/delete").put("image_id", id))
     }
 
     data class Pipeline(val id: String, val name: String, val preferred: Boolean, val tts: Triple<String, String, String>)

@@ -21,6 +21,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import android.graphics.Bitmap
+import android.net.Uri
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.IOException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -37,6 +43,8 @@ data class Msg(
     val actions: Map<String, PhoneActions.Result> = emptyMap(),
     /** The app whose screen went along with this question, shown under the bubble. */
     val screen: String? = null,
+    /** Photos that went with this question (files in [Photos.dir]). */
+    val photos: List<String> = emptyList(),
 )
 
 enum class Phase { Idle, Listening, Thinking, Speaking }
@@ -55,6 +63,8 @@ data class UiState(
     val attachment: Attachment? = null,
     val transcribing: Boolean = false,
     val holding: Boolean = false,
+    /** Photos waiting in the text bar to go with the next question. */
+    val photos: List<Photo> = emptyList(),
 )
 
 /**
@@ -81,6 +91,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         scope.launch {
             _state.collect { s -> if (s.phase == Phase.Idle) awake.release() else if (!awake.isHeld) awake.acquire(5 * 60_000L) }
         }
+        scope.launch(Dispatchers.IO) { Photos.prune(app) }
     }
 
     private var conversationId: String? = null
@@ -232,7 +243,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         conversationId = null
         continueConversation = false
         // The screen (or shared text) belongs to this showing, not the old chat: a new chat still gets the screenshot button.
-        _state.update { UiState(speakReplies = it.speakReplies, attachment = it.attachment) }
+        _state.update { UiState(speakReplies = it.speakReplies, attachment = it.attachment, photos = it.photos) }
         cancelReopenNotice()
     }
 
@@ -268,6 +279,76 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     fun dropAttachment() = _state.update { it.copy(attachment = null) }
 
+    // ---- photos -------------------------------------------------------------------------------------------------------
+
+    /** Each photo's upload to HA, started as soon as it is picked; null if it failed. Keyed by file path. */
+    private val uploads = mutableMapOf<String, Deferred<String?>>()
+    /** The panel stepped aside for the photo picker or the camera, and comes back when it closes. */
+    private var picking = false
+
+    /** The photo button: the phone's photo picker (several at once) or the camera. The panel steps aside meanwhile. */
+    fun pickPhotos(camera: Boolean) {
+        stopListening()
+        stopAudio()
+        val intent = Intent(app, PhotoActivity::class.java).putExtra(PhotoActivity.EXTRA_CAMERA, camera)
+        val opened = runCatching {
+            onStartActivity?.invoke(intent) ?: app.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.isSuccess
+        if (!opened) return notice("Couldn't open the ${if (camera) "camera" else "photo picker"}")
+        picking = true
+        if (visible) main.postDelayed({ onLeave?.invoke() }, 250)
+    }
+
+    /** From [PhotoActivity] once the picker or camera has closed: the panel comes back and listens for what to do. */
+    fun photosPicked() {
+        if (!picking) return
+        picking = false
+        if (!visible) reopenAssist(app)
+    }
+
+    /** Shrink, show and start uploading each picture (from the photo button, or shared into the app). */
+    suspend fun addPhotos(uris: List<Uri>) {
+        for (uri in uris) {
+            if (_state.value.photos.size >= Photos.MAX_PER_QUESTION) {
+                notice("Up to ${Photos.MAX_PER_QUESTION} photos at a time")
+                break
+            }
+            val file = runCatching { Photos.prepare(app, uri) }.getOrNull()
+            val thumb = file?.let { withContext(Dispatchers.IO) { Photos.thumb(it) } }
+            if (file == null || thumb == null) {
+                notice("Couldn't read one of the photos")
+                continue
+            }
+            _state.update { it.copy(photos = it.photos + Photo(file, thumb)) }
+            upload(file)
+        }
+    }
+
+    private fun upload(file: File) {
+        uploads[file.path] = scope.async {
+            runCatching { ha.uploadImage(file) }.getOrNull().also { id ->
+                _state.update { s -> s.copy(photos = s.photos.map { if (it.file == file) it.copy(id = id, failed = id == null) else it }) }
+            }
+        }
+    }
+
+    /** Tapping a photo in the text bar takes it out again. */
+    fun removePhoto(p: Photo) {
+        _state.update { s -> s.copy(photos = s.photos.filter { it.file != p.file }) }
+        uploads.remove(p.file.path)?.let { up -> scope.launch { up.await()?.let(::forgetPhoto) } }
+        p.file.delete()
+    }
+
+    /** HA ids of [photos], waiting for uploads still under way and trying failed ones once more; null if any failed. */
+    private suspend fun photoIds(photos: List<Photo>): List<String>? = photos.map { p ->
+        uploads.remove(p.file.path)?.await() ?: runCatching { ha.uploadImage(p.file) }.getOrNull() ?: return null
+    }
+
+    /** The bridge keeps its own copy once a question is answered, so HA's goes (HA serves it to the LAN without a sign-in). */
+    private fun forgetPhoto(id: String) {
+        scope.launch { runCatching { ha.deleteImage(id) } }
+    }
+
     // ---- history ------------------------------------------------------------------------------------------------------
 
     fun showHistory(show: Boolean) {
@@ -297,7 +378,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     }
 
     private fun saveCurrent() {
-        val msgs = _state.value.messages.filter { it.text.isNotBlank() }.map { it.copy(streaming = false) }
+        val msgs = _state.value.messages.filter { it.text.isNotBlank() || it.photos.isNotEmpty() }.map { it.copy(streaming = false) }
         if (msgs.none { it.fromUser }) return
         val chat = SavedChat(chatId, maxOf(lastActivity, 1L), conversationId, msgs)
         _history.value = listOf(chat) + _history.value.filter { it.id != chatId }
@@ -373,7 +454,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     }
 
     fun sendTyped(text: String) {
-        if (text.isBlank()) return
+        if (text.isBlank() && _state.value.photos.isEmpty()) return
         stopListening()
         stopAudio()
         send(text.trim(), spoken = false)
@@ -508,20 +589,32 @@ class Conversation(private val app: Context, private val ha: Ha) {
         lastTurnWasVoice = spoken
         continueConversation = false
         val replyId = nextId + 1
+        val photos = _state.value.photos
         _state.update {
             it.copy(
                 messages = it.messages.map { m -> if (m.streaming) m.copy(streaming = false) else m } +
-                    Msg(nextId, true, text, screen = sentScreen) + Msg(replyId, false, "", streaming = true),
+                    Msg(nextId, true, text, screen = sentScreen, photos = photos.map { p -> p.file.path }) +
+                    Msg(replyId, false, "", streaming = true),
                 phase = Phase.Thinking,
                 notice = null,
+                photos = emptyList(),
             )
         }
         nextId += 2
         val speaker = if (spoken && _state.value.speakReplies) startVoice() else null
         runJob = scope.launch {
             val me = coroutineContext.job
+            var ids = emptyList<String>()
             try {
-                ha.run(sent, conversationId).collect { ev ->
+                if (photos.isNotEmpty()) {
+                    ids = photoIds(photos) ?: run {
+                        _state.update { it.copy(photos = photos + it.photos) } // back in the text bar, to send again
+                        photos.forEach { upload(it.file) }
+                        throw IOException("the photos didn't upload")
+                    }
+                }
+                val withPhotos = if (ids.isEmpty()) sent else "$PHOTOS_MARK${ids.joinToString(" ")}]\n$sent"
+                ha.run(withPhotos, conversationId).collect { ev ->
                     when (ev) {
                         is PipeEvent.Delta -> {
                             edit(replyId) { it.copy(text = it.text + ev.text) }
@@ -548,6 +641,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
                 val why = e.message ?: e.javaClass.simpleName
                 edit(replyId) { it.copy(text = (it.text.trimEnd() + "\n\nCouldn't reach Home Assistant ($why).").trim(), error = true) }
             } finally {
+                ids.forEach(::forgetPhoto)
                 speaker?.end()
                 edit(replyId) { it.copy(streaming = false) }
                 if (runJob === me) runActions(replyId)
@@ -773,5 +867,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         const val UNLOCKED_MARK = "[assist:unlocked]"
         /** How long an unlock still counts as confirming (the proxy keeps the pending door unlock for 5 minutes). */
         const val CONFIRM_MS = 120_000L
+        /** First line "[assist:photos <id> <id>]": photos in HA's image store that go with the question (the bridge fetches them). */
+        const val PHOTOS_MARK = "[assist:photos "
     }
 }

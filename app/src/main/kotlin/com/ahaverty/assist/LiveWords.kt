@@ -19,6 +19,11 @@ object LiveWords {
         for (k in minOf(a.size, b.size) downTo 1) {
             if (ka.subList(a.size - k, a.size) == kb.subList(0, k)) return (a + b.drop(k)).joinToString(" ")
         }
+        // A Whisper draft cut at a gap can end in a clipped word ("as if I" for "as if I'm"): match the words
+        // before it, and let [next]'s whole word stand in for it.
+        for (k in minOf(a.size - 1, b.size) downTo 2) {
+            if (ka.subList(a.size - 1 - k, a.size - 1) == kb.subList(0, k)) return (a.dropLast(1) + b.drop(k)).joinToString(" ")
+        }
         return (a + b).joinToString(" ")
     }
 

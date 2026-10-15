@@ -337,15 +337,20 @@ class WhisperSpeech(
         recognizer = r
         segBase = committed
         segHeld = ""
+        val began = SystemClock.elapsedRealtime()
+        val t = turn
         fun endSegment(final: String?) {
             if (recognizer !== r) return
             val last = final ?: segment
             // A final that repeats the words held at a mid-session restart replaces them, rather than following them.
             committed = if (segHeld.isNotEmpty() && LiveWords.startsLike(last, segHeld)) LiveWords.merge(segBase, last)
             else LiveWords.merge(committed, last)
+            val failedAtOnce = final == null && segment.isEmpty() && SystemClock.elapsedRealtime() - began < 1000
             segment = ""
             closeSegment()
-            startPreviewSegment()
+            // A recognizer that fails straight away (busy, not ready) is tried again after a beat, not 40 times at once.
+            if (failedAtOnce) main.postDelayed({ if (t == turn && recognizer == null) startPreviewSegment() }, 300)
+            else startPreviewSegment()
         }
         r.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: android.os.Bundle?) {}

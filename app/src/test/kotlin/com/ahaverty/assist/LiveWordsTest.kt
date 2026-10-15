@@ -14,6 +14,15 @@ class LiveWordsTest {
     }
 
     @Test
+    fun mergeReplacesAClippedLastWord() {
+        // From a replay: the draft was cut just inside "I'm", and Google's tail started a few words back.
+        assertEquals(
+            "overwriting the entire paragraph as if I'm just starting",
+            LiveWords.merge("overwriting the entire paragraph as if I", "paragraph as if I'm just starting"),
+        )
+    }
+
+    @Test
     fun mergeTakesACumulativeFinal() {
         assertEquals("what's the weather like tomorrow", LiveWords.merge("what's the weather", "what's the weather like tomorrow"))
     }

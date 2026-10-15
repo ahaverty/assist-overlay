@@ -269,7 +269,8 @@ class WhisperSpeech(
     /**
      * Whisper on samples [from, end), checked: it sometimes stops early (a few words, then nothing), so text
      * well short of what the last draft or Google already have for this audio is tried again without the
-     * earlier words as its prompt, and dropped (null) if it is still short.
+     * earlier words as its prompt and with Whisper's full 30 s window (the trimmed one is what tends to stop
+     * early), and dropped (null) if it is still short.
      */
     private suspend fun transcribeChecked(audio: FloatArray, from: Int, end: Int, before: String): String? {
         val drafted = words(draft) - words(before)
@@ -278,7 +279,7 @@ class WhisperSpeech(
         val text = Whisper.transcribe(context, model(), audio, previous = before)
         live("draft: $text")
         if (!short(text)) return text
-        val again = Whisper.transcribe(context, model(), audio)
+        val again = Whisper.transcribe(context, model(), audio, audioCtx = 0)
         live("too short (drafted $drafted, Google $google), again: $again")
         return again.takeUnless { short(it) }
     }

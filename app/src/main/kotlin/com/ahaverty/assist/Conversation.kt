@@ -394,9 +394,12 @@ class Conversation(private val app: Context, private val ha: Ha) {
      * (the earlier exchange after a gap, screen or shared text), then the question itself.
      */
     private var sentScreen: String? = null
+    /** The screenshot that goes with [sentScreen], uploaded as a picture so Friday sees media too, not just the text. */
+    private var sentShot: Bitmap? = null
 
     private fun outgoing(question: String): String {
         sentScreen = null
+        sentShot = null
         val context = mutableListOf<String>()
         val earlier = _state.value.messages.filter { it.text.isNotBlank() && !it.error }
         // No conversation id (an earlier turn was cut short before HA gave one) means HA would start afresh too.
@@ -415,6 +418,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
                 } +
                     ":\n" + a.text.take(6000)
                 sentScreen = a.label
+                if (!a.shared) sentShot = a.shot
             }
         }
         // Shared text goes once; the screen stays for follow-ups, its button back to unpressed.
@@ -590,6 +594,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         continueConversation = false
         val replyId = nextId + 1
         val photos = _state.value.photos
+        val shot = sentShot
         _state.update {
             it.copy(
                 messages = it.messages.map { m -> if (m.streaming) m.copy(streaming = false) else m } +
@@ -613,7 +618,14 @@ class Conversation(private val app: Context, private val ha: Ha) {
                         throw IOException("the photos didn't upload")
                     }
                 }
-                val withPhotos = if (ids.isEmpty()) sent else "$PHOTOS_MARK${ids.joinToString(" ")}]\n$sent"
+                // The screen's picture: if it doesn't upload, the screen text still goes.
+                val shotId = shot?.let {
+                    val file = runCatching { Photos.screenshot(app, it) }.getOrNull()
+                    file?.let { f -> runCatching { ha.uploadImage(f) }.getOrNull().also { f.delete() } }
+                }
+                var withPhotos = if (shotId == null) sent else "$SCREEN_MARK$shotId]\n$sent"
+                if (shotId != null) ids = ids + shotId
+                if (photos.isNotEmpty()) withPhotos = "$PHOTOS_MARK${ids.filter { it != shotId }.joinToString(" ")}]\n$withPhotos"
                 ha.run(withPhotos, conversationId).collect { ev ->
                     when (ev) {
                         is PipeEvent.Delta -> {
@@ -869,5 +881,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         const val CONFIRM_MS = 120_000L
         /** First line "[assist:photos <id> <id>]": photos in HA's image store that go with the question (the bridge fetches them). */
         const val PHOTOS_MARK = "[assist:photos "
+        /** "[assist:screen <id>]": the screenshot that goes with the screen text, in HA's image store like the photos. */
+        const val SCREEN_MARK = "[assist:screen "
     }
 }

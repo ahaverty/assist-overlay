@@ -40,6 +40,19 @@ object Photos {
         out
     }
 
+    /** The screenshot Android passed with the screen, shrunk like a photo into a cache JPEG for one upload. */
+    suspend fun screenshot(context: Context, shot: Bitmap): File = withContext(Dispatchers.IO) {
+        // Android may hand over a HARDWARE bitmap, which can't be scaled or compressed directly.
+        val soft = if (shot.config == Bitmap.Config.HARDWARE) shot.copy(Bitmap.Config.ARGB_8888, false) else shot
+        val scale = MAX_EDGE.toFloat() / maxOf(soft.width, soft.height)
+        val sized = if (scale < 1f) Bitmap.createScaledBitmap(soft, (soft.width * scale).toInt().coerceAtLeast(1), (soft.height * scale).toInt().coerceAtLeast(1), true) else soft
+        val out = File(File(context.cacheDir, "screens").apply { mkdirs() }, "${System.currentTimeMillis().toString(36)}.jpg")
+        out.outputStream().use { sized.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+        if (sized !== soft) sized.recycle()
+        if (soft !== shot) soft.recycle()
+        out
+    }
+
     /** A small copy for the text bar and the chat. */
     fun thumb(file: File, edge: Int = 192): Bitmap? = runCatching {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

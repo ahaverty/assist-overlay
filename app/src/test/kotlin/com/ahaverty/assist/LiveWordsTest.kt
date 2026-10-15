@@ -23,6 +23,13 @@ class LiveWordsTest {
     }
 
     @Test
+    fun mergeDropsAWordGoogleWasBehindOn() {
+        // Google's snapshot was a word behind the draft: its "well" is already in it.
+        assertEquals("is not working well still.", LiveWords.merge("is not working well still.", "well"))
+        assertEquals("is not working well still. it's kind", LiveWords.merge("is not working well still.", "well still it's kind"))
+    }
+
+    @Test
     fun mergeTakesACumulativeFinal() {
         assertEquals("what's the weather like tomorrow", LiveWords.merge("what's the weather", "what's the weather like tomorrow"))
     }

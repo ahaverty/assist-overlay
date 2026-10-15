@@ -250,10 +250,9 @@ class WhisperSpeech(
         val before = settled
         live("draft start ${from / RATE.toFloat()}-${end / RATE.toFloat()} s")
         draftJob = scope.launch {
-            val text = runCatching { Whisper.transcribe(context, model(), audio, previous = before) }
+            val text = runCatching { transcribeChecked(audio, from, end, before) }
                 .onFailure { Log.w(TAG, "draft failed", it) }
                 .getOrNull()?.takeIf { it.isNotBlank() } ?: return@launch
-            live("draft: $text")
             if (t != turn || finished) return@launch
             draft = join(before, text)
             draftDone = end
@@ -265,6 +264,25 @@ class WhisperSpeech(
             show()
         }
     }
+
+    /**
+     * Whisper on samples [from, end), checked: it sometimes stops early (a few words, then nothing), so text
+     * well short of what the last draft or Google already have for this audio is tried again without the
+     * earlier words as its prompt, and dropped (null) if it is still short.
+     */
+    private suspend fun transcribeChecked(audio: FloatArray, from: Int, end: Int, before: String): String? {
+        val drafted = words(draft) - words(before)
+        val google = words(googleAt(end)) - words(googleAt(from))
+        fun short(text: String) = words(text).let { it < drafted - 3 || it < google * 0.6 - 2 }
+        val text = Whisper.transcribe(context, model(), audio, previous = before)
+        live("draft: $text")
+        if (!short(text)) return text
+        val again = Whisper.transcribe(context, model(), audio)
+        live("too short (drafted $drafted, Google $google), again: $again")
+        return again.takeUnless { short(it) }
+    }
+
+    private fun words(s: String) = s.split(' ').count { it.isNotBlank() }
 
     /** What Google showed when it had been given [end] samples. */
     private fun googleAt(end: Int) = heard.lastOrNull { it.first <= end }?.second ?: ""
@@ -288,7 +306,7 @@ class WhisperSpeech(
             val end = minOf(samples.count, lastSpeechSample + RATE / 2)
             val before = settled
             val text = if (end - settledAt < RATE / 4) "" else runCatching {
-                Whisper.transcribe(context, model(), samples.toFloats(settledAt, end), previous = before)
+                transcribeChecked(samples.toFloats(settledAt, end), settledAt, end, before)
             }.onFailure { Log.w(TAG, "whisper failed", it) }.getOrNull()
             if (t != turn) return@launch
             val said = if (text == null) null else join(before, text)

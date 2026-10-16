@@ -10,7 +10,6 @@ import android.service.voice.VoiceInteractionSession
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.core.view.WindowCompat
@@ -50,10 +49,14 @@ class AssistSession(context: Context) :
             WindowCompat.setDecorFitsSystemWindows(it, false)
         }
         window.window?.decorView?.let { decor ->
-            decor.viewTreeObserver.addOnPreDrawListener {
-                val at = IntArray(2).also(decor::getLocationInWindow)
-                windowPan.intValue = -at[1]
-                true
+            // On draw, not pre-draw: the system moves its pan (animated over ~250 ms) inside the window's
+            // draw, after pre-draw, so pre-draw always saw last frame's pan. That, plus a Compose state
+            // that only lands a frame later still, made the overlay shake as the keyboard came up.
+            // Setting the view's own translation here is in time for the frame being drawn.
+            val at = IntArray(2)
+            decor.viewTreeObserver.addOnDrawListener {
+                decor.getLocationInWindow(at)
+                content?.let { if (it.translationY != -at[1].toFloat()) it.translationY = -at[1].toFloat() }
             }
         }
         // The screen stays on while Friday listens, thinks or talks, so it doesn't lock (and hide the
@@ -68,14 +71,14 @@ class AssistSession(context: Context) :
     }
 
     /**
-     * How far the system has panned this window up to show the focused text field. Android 16 pans the
-     * voice interaction window whatever soft input mode is set, and the panel already lifts itself above
-     * the keyboard with imePadding(), so the overlay moves back down by this much (else it floats a
-     * keyboard's height above the keys). getLocationInWindow on the decor includes the pan.
+     * The overlay's view. Android 16 pans the voice interaction window up to show the focused text field
+     * whatever soft input mode is set, and the panel already lifts itself above the keyboard with
+     * imePadding(), so this view moves back down by the pan (else it floats a keyboard's height above the
+     * keys). getLocationInWindow on the decor includes the pan.
      */
-    private val windowPan = mutableIntStateOf(0)
+    private var content: View? = null
 
-    override fun onCreateContentView(): View = ComposeView(context).apply {
+    override fun onCreateContentView(): View = ComposeView(context).also { content = it }.apply {
         setViewTreeLifecycleOwner(this@AssistSession)
         setViewTreeSavedStateRegistryOwner(this@AssistSession)
         setViewTreeViewModelStoreOwner(this@AssistSession)
@@ -84,7 +87,6 @@ class AssistSession(context: Context) :
             AssistTheme {
                 AssistOverlay(
                     convo = App.convo,
-                    windowPan = { windowPan.intValue },
                     onClose = {
                         App.convo.close()
                         hide()

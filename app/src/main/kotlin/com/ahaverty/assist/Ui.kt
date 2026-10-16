@@ -143,7 +143,6 @@ fun AssistOverlay(
     onTuck: (left: Boolean) -> Unit,
     onOpenClaude: () -> Unit,
     onOpenUrl: (String) -> Unit,
-    windowPan: () -> Int = { 0 },
 ) {
     var overlay by remember { mutableStateOf<LayoutCoordinates?>(null) }
     // The screenshot button's grab: the screen shrinks from full size into the button's spot in the text bar.
@@ -155,8 +154,7 @@ fun AssistOverlay(
     Box(
         Modifier
             .fillMaxSize()
-            // Undo the system's pan of the window: imePadding() below already clears the keyboard.
-            .graphicsLayer { translationY = windowPan().toFloat() }
+            // AssistSession undoes the system's pan of the window: imePadding() below already clears the keyboard.
             .onGloballyPositioned { overlay = it }
             .background(Color.Black.copy(alpha = 0.32f))
             // Swallow taps on the scrim: dismissing is only ever deliberate.

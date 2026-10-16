@@ -60,6 +60,16 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.VoiceOverOff
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Smartphone
@@ -86,7 +96,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -317,13 +326,18 @@ fun AssistPanel(
                     onNew = convo::newChat,
                     onOpenClaude = onOpenClaude,
                     onToggleSpeak = convo::toggleSpeak,
+                    onToggleMicOnOpen = convo::toggleMicOnOpen,
+                    onToggleFollowUps = convo::toggleFollowUps,
                     onHistory = { convo.showHistory(!state.showHistory) },
                 )
                 if (state.showHistory) {
                     val chats by convo.history.collectAsState()
                     HistoryList(chats, onOpen = convo::resume, onDelete = convo::deleteChat, modifier = Modifier.weight(1f, fill = false))
                 } else {
-                    Messages(state, onOpenUrl, Modifier.weight(1f, fill = false))
+                    Messages(
+                        state, onOpenUrl, Modifier.weight(1f, fill = false),
+                        onCancelHeard = convo::cancelListening, onEditHeard = convo::editHeard, onEditLast = convo::editLast,
+                    )
                     state.notice?.let { Notice(it, onDismiss = convo::clearNotice) }
                     state.attachment?.takeIf { it.shared }?.let { AttachmentChip(it, onToggle = convo::toggleAttachment, onDrop = convo::dropAttachment) }
                     InputRow(state, convo, micDown, onGrab)
@@ -341,6 +355,8 @@ private fun Header(
     onNew: () -> Unit,
     onOpenClaude: () -> Unit,
     onToggleSpeak: () -> Unit,
+    onToggleMicOnOpen: () -> Unit,
+    onToggleFollowUps: () -> Unit,
     onHistory: () -> Unit,
 ) {
     Row(modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -375,6 +391,19 @@ private fun Header(
                         },
                         onClick = { menu = false; onToggleSpeak() },
                     )
+                    // For the TV on, or out and about: open on the keyboard and only listen when the mic is tapped.
+                    DropdownMenuItem(
+                        text = { Text(if (state.micOnOpen) "Open on the keyboard" else "Open listening") },
+                        leadingIcon = { Icon(if (state.micOnOpen) Icons.Filled.Keyboard else Icons.Filled.Mic, contentDescription = null) },
+                        onClick = { menu = false; onToggleMicOnOpen() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (state.followUps) "Don't listen again after replies" else "Listen again after replies") },
+                        leadingIcon = {
+                            Icon(if (state.followUps) Icons.Filled.VoiceOverOff else Icons.Filled.RecordVoiceOver, contentDescription = null)
+                        },
+                        onClick = { menu = false; onToggleFollowUps() },
+                    )
                 }
             }
             val status = when (state.phase) {
@@ -402,7 +431,14 @@ private fun Header(
 }
 
 @Composable
-private fun Messages(state: UiState, onOpenUrl: (String) -> Unit, modifier: Modifier = Modifier) {
+private fun Messages(
+    state: UiState,
+    onOpenUrl: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    onCancelHeard: () -> Unit = {},
+    onEditHeard: () -> Unit = {},
+    onEditLast: () -> Unit = {},
+) {
     val list = rememberLazyListState()
     val lastLen = state.messages.lastOrNull()?.text?.length ?: 0
     LaunchedEffect(state.messages.size, lastLen, state.partial) {
@@ -425,12 +461,44 @@ private fun Messages(state: UiState, onOpenUrl: (String) -> Unit, modifier: Modi
                 )
             }
         }
+        val lastQuestion = state.messages.lastOrNull { it.fromUser }?.id
         items(state.messages, key = { it.id }) { m ->
-            if (m.fromUser) UserBubble(m.text, screen = m.screen, photos = m.photos) else Reply(m, onOpenUrl)
+            if (m.fromUser) {
+                Column {
+                    UserBubble(m.text, screen = m.screen, photos = m.photos)
+                    // Misheard? Back into the text box to fix (and taken back if no answer has started).
+                    if (m.id == lastQuestion && m.text.isNotBlank() && state.phase != Phase.Listening) {
+                        BubbleActions { BubbleAction("Edit", Icons.Filled.Edit, onEditLast) }
+                    }
+                }
+            } else Reply(m, onOpenUrl)
         }
         if (state.partial.isNotEmpty()) {
             item(key = "partial") { UserBubble(state.partial, live = true) }
         }
+        // While it listens (not held): throw away what it heard, or stop and fix the words before sending.
+        if (state.phase == Phase.Listening && !state.holding) {
+            item(key = "heard-actions") {
+                BubbleActions {
+                    BubbleAction("Cancel", Icons.Filled.Close, onCancelHeard)
+                    if (state.partial.isNotBlank()) BubbleAction("Edit", Icons.Filled.Edit, onEditHeard)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BubbleActions(content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, content = content)
+}
+
+@Composable
+private fun BubbleAction(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    TextButton(onClick = onClick, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 0.dp)) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge)
     }
 }
 
@@ -545,7 +613,23 @@ private fun InputRow(
     micDown: androidx.compose.runtime.MutableState<Boolean>,
     onGrab: ((LayoutCoordinates, android.graphics.Bitmap?) -> Unit)?,
 ) {
-    var typed by rememberSaveable { mutableStateOf("") }
+    var field by remember { mutableStateOf(TextFieldValue("")) }
+    val typed = field.text
+    val focus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    // Heard words or a taken-back question to fix: into the box, cursor at the end.
+    LaunchedEffect(state.draft) {
+        state.draft?.let { d ->
+            field = TextFieldValue(d, TextRange(d.length))
+            convo.draftTaken()
+        }
+    }
+    LaunchedEffect(state.focusInput) {
+        if (state.focusInput > 0) {
+            runCatching { focus.requestFocus() }
+            keyboard?.show()
+        }
+    }
     val screen = state.attachment?.takeIf { !it.shared }
     if (state.photos.isNotEmpty()) PhotoStrip(state.photos, onRemove = convo::removePhoto)
     Row(
@@ -553,10 +637,10 @@ private fun InputRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         OutlinedTextField(
-            value = typed,
+            value = field,
             onValueChange = {
-                if (typed.isEmpty() && it.isNotEmpty()) convo.typingStarted()
-                typed = it
+                if (typed.isEmpty() && it.text.isNotEmpty()) convo.typingStarted()
+                field = it
             },
             placeholder = {
                 Text(
@@ -574,13 +658,14 @@ private fun InputRow(
                 if (screen == null) NoScreenButton(convo::noScreen)
                 else ScreenButton(screen, onGrab = { button -> convo.grabScreen(); onGrab?.invoke(button, screen.shot) }, onDrop = convo::toggleAttachment)
             },
-            modifier = Modifier.weight(1f),
+            // Tapping the box means typing: the mic stops at once (nothing heard is sent), so the TV can't go instead.
+            modifier = Modifier.weight(1f).focusRequester(focus).onFocusChanged { if (it.isFocused) convo.typingStarted() },
             shape = RoundedCornerShape(26.dp),
             maxLines = 4,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             keyboardActions = KeyboardActions(onSend = {
                 convo.sendTyped(typed)
-                typed = ""
+                field = TextFieldValue("")
             }),
             colors = OutlinedTextFieldDefaults.colors(
                 unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
@@ -588,7 +673,7 @@ private fun InputRow(
         )
         Spacer(Modifier.width(10.dp))
         if (typed.isNotBlank()) {
-            FilledIconButton(onClick = { convo.sendTyped(typed); typed = "" }, modifier = Modifier.size(56.dp)) {
+            FilledIconButton(onClick = { convo.sendTyped(typed); field = TextFieldValue("") }, modifier = Modifier.size(56.dp)) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
             }
         } else {

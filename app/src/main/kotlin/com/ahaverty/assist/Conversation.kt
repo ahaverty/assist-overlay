@@ -65,6 +65,14 @@ data class UiState(
     val holding: Boolean = false,
     /** Photos waiting in the text bar to go with the next question. */
     val photos: List<Photo> = emptyList(),
+    /** Opening the panel starts the mic; off, it opens on the keyboard instead (TV on, out and about). */
+    val micOnOpen: Boolean = true,
+    /** Listen again after a reply that asks something back; off, every question is a single shot. */
+    val followUps: Boolean = true,
+    /** Text for the text box, to fix before sending (heard words, or the last question taken back). */
+    val draft: String? = null,
+    /** Bumped to put the cursor in the text box and bring up the keyboard. */
+    val focusInput: Int = 0,
 )
 
 /**
@@ -75,7 +83,13 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val main = Handler(Looper.getMainLooper())
     private val prefs = app.getSharedPreferences("ui", Context.MODE_PRIVATE)
-    private val _state = MutableStateFlow(UiState(speakReplies = prefs.getBoolean("speak", true)))
+    private val _state = MutableStateFlow(
+        UiState(
+            speakReplies = prefs.getBoolean("speak", true),
+            micOnOpen = prefs.getBoolean("mic_on_open", true),
+            followUps = prefs.getBoolean("follow_ups", true),
+        ),
+    )
     val state: StateFlow<UiState> = _state
     val feedback = Feedback(app)
 
@@ -168,7 +182,9 @@ class Conversation(private val app: Context, private val ha: Ha) {
             !App.auth.loggedIn -> notice("Open the Assist app and sign in to Home Assistant first.")
             !hasMic() -> notice("Open the Assist app to allow the microphone.")
             _state.value.attachment?.shared == true -> Unit // something was shared in: let Alan ask about it
-            _state.value.phase == Phase.Idle -> listen()
+            _state.value.phase != Phase.Idle -> Unit
+            _state.value.micOnOpen -> listen()
+            else -> _state.update { it.copy(focusInput = it.focusInput + 1) }
         }
         Updater.checkInBackground(app)
         whisperModel?.let { m -> scope.launch { runCatching { Whisper.preload(app, m) } } }
@@ -230,7 +246,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     fun newChat() {
         reset()
-        if (visible && App.auth.loggedIn && hasMic()) listen()
+        if (visible && App.auth.loggedIn && hasMic() && _state.value.micOnOpen) listen()
     }
 
     private fun reset() {
@@ -243,7 +259,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         conversationId = null
         continueConversation = false
         // The screen (or shared text) belongs to this showing, not the old chat: a new chat still gets the screenshot button.
-        _state.update { UiState(speakReplies = it.speakReplies, attachment = it.attachment, photos = it.photos) }
+        _state.update { UiState(speakReplies = it.speakReplies, micOnOpen = it.micOnOpen, followUps = it.followUps, attachment = it.attachment, photos = it.photos) }
         cancelReopenNotice()
     }
 
@@ -265,7 +281,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     /** The screenshot button: the screen goes with the next question, said or typed. Listens if the mic had stopped. */
     fun grabScreen() {
         _state.update { s -> s.copy(attachment = s.attachment?.copy(on = true)) }
-        if (visible && _state.value.phase == Phase.Idle && App.auth.loggedIn && hasMic()) listen()
+        if (visible && _state.value.phase == Phase.Idle && App.auth.loggedIn && hasMic() && _state.value.micOnOpen) listen()
     }
 
     /** The screenshot button when Android passed no screen (a secure app, or screen text off): say so rather than hide it. */
@@ -457,6 +473,49 @@ class Conversation(private val app: Context, private val ha: Ha) {
         _state.update { it.copy(speakReplies = on) }
     }
 
+    fun toggleMicOnOpen() {
+        val on = !_state.value.micOnOpen
+        prefs.edit().putBoolean("mic_on_open", on).apply()
+        _state.update { it.copy(micOnOpen = on) }
+    }
+
+    fun toggleFollowUps() {
+        val on = !_state.value.followUps
+        prefs.edit().putBoolean("follow_ups", on).apply()
+        _state.update { it.copy(followUps = on) }
+    }
+
+    /** Cancel while listening: throw away what was heard (the TV, a false start), nothing is sent. */
+    fun cancelListening() {
+        if (_state.value.phase != Phase.Listening) return
+        carry = ""
+        stopListening()
+        feedback.nothing()
+    }
+
+    /** Edit while listening: stop the mic and put what was heard in the text box to fix before sending. */
+    fun editHeard() {
+        val heard = _state.value.partial.trim()
+        carry = ""
+        stopListening()
+        _state.update { it.copy(draft = heard, focusInput = it.focusInput + 1) }
+    }
+
+    /**
+     * Edit on the last question: back into the text box to fix and send again. If no answer has started yet,
+     * the question is taken back too, so the misheard one doesn't run.
+     */
+    fun editLast() {
+        stopListening()
+        val taken = takeBackLast()
+        if (taken.isNotEmpty()) stopAudio()
+        val text = taken.ifEmpty { _state.value.messages.lastOrNull { it.fromUser }?.text?.trim().orEmpty() }
+        _state.update { it.copy(draft = text, focusInput = it.focusInput + 1) }
+    }
+
+    /** The text box has taken [UiState.draft]. */
+    fun draftTaken() = _state.update { it.copy(draft = null) }
+
     fun sendTyped(text: String) {
         if (text.isBlank() && _state.value.photos.isEmpty()) return
         stopListening()
@@ -496,8 +555,11 @@ class Conversation(private val app: Context, private val ha: Ha) {
         speech.stop()
     }
 
-    /** Typing started: drop the listening turn so the mic isn't open behind the keyboard. */
-    fun typingStarted() = stopListening()
+    /** The text box was tapped: drop the listening turn (unsent) so the mic isn't open, or sending the TV, behind the keyboard. */
+    fun typingStarted() {
+        carry = ""
+        stopListening()
+    }
 
     private fun listen() {
         carry = ""
@@ -762,7 +824,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private fun edit(id: Long, f: (Msg) -> Msg) = _state.update { s -> s.copy(messages = s.messages.map { if (it.id == id) f(it) else it }) }
 
     private fun maybeContinue() {
-        if (continueConversation && lastTurnWasVoice && visible && _state.value.phase == Phase.Idle) {
+        if (continueConversation && lastTurnWasVoice && visible && _state.value.phase == Phase.Idle && _state.value.followUps) {
             continueConversation = false
             listen()
         }

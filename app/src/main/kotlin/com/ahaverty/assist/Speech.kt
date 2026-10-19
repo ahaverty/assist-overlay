@@ -62,8 +62,11 @@ class Speech(
 
             override fun onResults(results: Bundle?) {
                 Log.d(TAG, "results: ${results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)}")
-                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                finish(text?.takeIf { it.isNotBlank() } ?: lastPartial.takeIf { it.isNotBlank() }, null)
+                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() }
+                // A final can drop the last words its partials showed ("What temperature?" after "what
+                // temperature is my office"): the partial that carries on from it wins.
+                val longer = lastPartial.takeIf { text != null && LiveWords.carriesOn(it, text) }
+                finish(longer ?: text ?: lastPartial.takeIf { it.isNotBlank() }, null)
             }
 
             override fun onError(error: Int) {

@@ -71,6 +71,13 @@ object LiveWords {
         return null
     }
 
+    /** True when [longer] is all of [shorter]'s words and then more. */
+    fun carriesOn(longer: String, shorter: String): Boolean {
+        val a = words(longer).map(::key)
+        val b = words(shorter).map(::key)
+        return b.isNotEmpty() && a.size > b.size && a.take(b.size) == b
+    }
+
     /** True when [text] starts with the same first words as [other]: a recognizer repeating, not moving on. */
     fun startsLike(text: String, other: String): Boolean {
         val a = words(text).map(::key)

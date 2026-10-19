@@ -74,4 +74,22 @@ class LiveWordsTest {
         assertFalse(LiveWords.startsLike("and the fan", "turn on the lights"))
         assertFalse(LiveWords.startsLike("anything", ""))
     }
+
+    @Test
+    fun carriesOnFromAShorterFinal() {
+        // 19 Oct: Google's partial had the whole question, its final dropped the end.
+        assertTrue(LiveWords.carriesOn("what temperature is my office", "What temperature?"))
+        assertTrue(LiveWords.carriesOn("what temperature is my office", "What temperature is"))
+        assertFalse(LiveWords.carriesOn("what temperature", "What temperature?"))
+        assertFalse(LiveWords.carriesOn("what time is it", "What temperature?"))
+    }
+
+    @Test
+    fun shortWhisperQuestionIsCaught() {
+        assertTrue(WhisperSpeech.isShort(2, drafted = 0, google = 5)) // "What temperature?"
+        assertTrue(WhisperSpeech.isShort(2, drafted = 0, google = 4))
+        assertFalse(WhisperSpeech.isShort(4, drafted = 0, google = 5))
+        assertFalse(WhisperSpeech.isShort(5, drafted = 0, google = 5))
+        assertFalse(WhisperSpeech.isShort(1, drafted = 0, google = 2)) // "Thanks." for "thank you"
+    }
 }

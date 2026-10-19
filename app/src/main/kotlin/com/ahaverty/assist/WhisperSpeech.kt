@@ -76,6 +76,7 @@ class WhisperSpeech(
     private var settledAt = 0
     private val heard = ArrayList<Pair<Int, String>>() // (samples, shown) at each Google update
     @Volatile private var lastSpeechSample = 0
+    @Volatile private var lastSoundSample = 0 // newest sound at all, quieter than speech too (a trailing "my office")
     @Volatile private var lastGapSample = 0 // middle of the newest short gap between words
     private var t0 = 0L
     private var replaying = false
@@ -91,11 +92,10 @@ class WhisperSpeech(
     }
 
     /** Whisper's draft, then whatever Google has heard since it was taken (minus any words both have). */
-    private fun display(): String {
-        if (draft.isEmpty()) return shown
-        LiveWords.tailAfter(shown, draft, draftGoogle)?.let { return LiveWords.merge(draft, it) }
-        return LiveWords.merge(draft, LiveWords.after(shown, draftGoogle))
-    }
+    private fun display(): String = if (draft.isEmpty()) shown else LiveWords.merge(draft, afterDraft())
+
+    /** Google's words after the draft's (minus any words both have). */
+    private fun afterDraft() = LiveWords.tailAfter(shown, draft, draftGoogle) ?: LiveWords.after(shown, draftGoogle)
 
     val active: Boolean get() = !finished
 
@@ -121,6 +121,7 @@ class WhisperSpeech(
         settledAt = 0
         heard.clear()
         lastSpeechSample = 0
+        lastSoundSample = 0
         lastGapSample = 0
         t0 = SystemClock.elapsedRealtime()
         replaying = replay != null
@@ -198,6 +199,7 @@ class WhisperSpeech(
                 // creeps up only slowly, so talking from the very first moment can't be mistaken for it.
                 noise = if (rms < noise) noise * 0.8 + rms * 0.2 else minOf(noise * 1.003, 2500.0)
                 val loud = rms > maxOf(noise * 2.2, 260.0)
+                if (rms > maxOf(noise * 1.6, 180.0)) lastSoundSample = samples.count
                 if (loud) {
                     speechMs += 20
                     silenceMs = 0
@@ -276,7 +278,7 @@ class WhisperSpeech(
     private suspend fun transcribeChecked(audio: FloatArray, from: Int, end: Int, before: String): String? {
         val drafted = words(draft) - words(before)
         val google = words(googleAt(end)) - words(googleAt(from))
-        fun short(text: String) = words(text).let { it < drafted - 3 || it < google * 0.6 - 2 }
+        fun short(text: String) = isShort(words(text), drafted, google)
         val text = Whisper.transcribe(context, model(), audio, previous = before)
         live("draft: $text")
         if (!short(text)) return text
@@ -313,13 +315,16 @@ class WhisperSpeech(
             // Drafts are short now: let the running one finish, as it may settle more of the clip.
             draftJob?.join()
             if (t != turn) return@launch
+            // The last words are often softer than the rest ("what temperature is | my office"): too quiet to
+            // count as speech, but Google hears them, so the clip runs to the last sound of any kind.
+            val lastSound = maxOf(lastSpeechSample, lastSoundSample)
             // The last draft already heard everything said (only the closing quiet came after it): use it.
-            if (draft.isNotBlank() && draftDone >= lastSpeechSample) return@launch finish(draft, null)
+            if (draft.isNotBlank() && draftDone >= lastSound && afterDraft().isBlank()) return@launch finish(draft, null)
             // The closing quiet is left out: Whisper makes up words ("Thanks for watching.") in silence.
-            val end = minOf(samples.count, lastSpeechSample + RATE / 2)
+            val end = minOf(samples.count, lastSound + RATE / 2)
             val before = settled
             // Nothing new from Google a second after the last sound (it runs up to a second behind): only noise.
-            val noise = settledAt > 0 && samples.count - lastSpeechSample >= RATE && newSinceSettled() == 0
+            val noise = settledAt > 0 && samples.count - lastSound >= RATE && newSinceSettled() == 0
             val text = if (end - settledAt < RATE / 4 || noise) "" else runCatching {
                 transcribeChecked(samples.toFloats(settledAt, end), settledAt, end, before)
             }.onFailure { Log.w(TAG, "whisper failed", it) }.getOrNull()
@@ -482,6 +487,13 @@ class WhisperSpeech(
         /** A draft ending in quiet that covers this many seconds is settled; any draft at [MAX_CHUNK_S]. */
         const val SETTLE_S = 8
         const val MAX_CHUNK_S = 20
+
+        /**
+         * Whisper's [n] words are well short of the [drafted] words or Google's [google] words for the same audio:
+         * it stopped early. Short questions count too: "What temperature?" for Google's "what temperature is my office".
+         */
+        fun isShort(n: Int, drafted: Int, google: Int) =
+            n < drafted - 3 || n < google * 0.6 - 2 || (google >= 3 && n * 2 <= google)
 
         /** [before] then [text], Whisper's settled words and the ones after them. */
         fun join(before: String, text: String) = if (before.isEmpty()) text.trim() else "$before ${text.trim()}".trim()

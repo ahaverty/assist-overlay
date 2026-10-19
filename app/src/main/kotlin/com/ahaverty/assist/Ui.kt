@@ -67,6 +67,7 @@ import androidx.compose.material.icons.filled.VoiceOverOff
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
@@ -391,9 +392,9 @@ private fun Header(
                         },
                         onClick = { menu = false; onToggleSpeak() },
                     )
-                    // For the TV on, or out and about: open on the keyboard and only listen when the mic is tapped.
+                    // For the TV on, or out and about: open quietly and only listen when the mic is tapped.
                     DropdownMenuItem(
-                        text = { Text(if (state.micOnOpen) "Open on the keyboard" else "Open listening") },
+                        text = { Text(if (state.micOnOpen) "Don't listen on open" else "Listen on open") },
                         leadingIcon = { Icon(if (state.micOnOpen) Icons.Filled.Keyboard else Icons.Filled.Mic, contentDescription = null) },
                         onClick = { menu = false; onToggleMicOnOpen() },
                     )
@@ -628,6 +629,13 @@ private fun InputRow(
         if (state.focusInput > 0) {
             runCatching { focus.requestFocus() }
             keyboard?.show()
+        }
+    }
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(state.blurInput) {
+        if (state.blurInput > 0) {
+            focusManager.clearFocus()
+            keyboard?.hide()
         }
     }
     val screen = state.attachment?.takeIf { !it.shared }

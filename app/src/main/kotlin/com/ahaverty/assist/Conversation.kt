@@ -65,7 +65,7 @@ data class UiState(
     val holding: Boolean = false,
     /** Photos waiting in the text bar to go with the next question. */
     val photos: List<Photo> = emptyList(),
-    /** Opening the panel starts the mic; off, it opens on the keyboard instead (TV on, out and about). */
+    /** Opening the panel starts the mic; off, it opens quietly (TV on, out and about) and the keyboard waits for a tap on the box. */
     val micOnOpen: Boolean = true,
     /** Listen again after a reply that asks something back; off, every question is a single shot. */
     val followUps: Boolean = true,
@@ -73,6 +73,8 @@ data class UiState(
     val draft: String? = null,
     /** Bumped to put the cursor in the text box and bring up the keyboard. */
     val focusInput: Int = 0,
+    /** Bumped to take the cursor out of the text box and put the keyboard away (panel opened, question sent). */
+    val blurInput: Int = 0,
 )
 
 /**
@@ -178,13 +180,14 @@ class Conversation(private val app: Context, private val ha: Ha) {
         EdgeTab.remove()
         cancelReopenNotice()
         if (stale) reset()
+        // The keyboard only comes up when Alan taps the box: a box left focused by the last typed question would bring it back on every open.
+        _state.update { it.copy(blurInput = it.blurInput + 1) }
         when {
             !App.auth.loggedIn -> notice("Open the Assist app and sign in to Home Assistant first.")
             !hasMic() -> notice("Open the Assist app to allow the microphone.")
             _state.value.attachment?.shared == true -> Unit // something was shared in: let Alan ask about it
             _state.value.phase != Phase.Idle -> Unit
             _state.value.micOnOpen -> listen()
-            else -> _state.update { it.copy(focusInput = it.focusInput + 1) }
         }
         Updater.checkInBackground(app)
         whisperModel?.let { m -> scope.launch { runCatching { Whisper.preload(app, m) } } }
@@ -520,6 +523,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         if (text.isBlank() && _state.value.photos.isEmpty()) return
         stopListening()
         stopAudio()
+        _state.update { it.copy(blurInput = it.blurInput + 1) }
         send(text.trim(), spoken = false)
     }
 

@@ -44,6 +44,8 @@ class WhisperSpeech(
     private val onLevel: (Float) -> Unit,
     private val onDone: (text: String?, error: String?) -> Unit,
     private val onTranscribing: () -> Unit = {},
+    /** Seconds before the hard cap ends the turn, once a second for the last [WARN_MS]. */
+    private val onTimeLeft: (Int) -> Unit = {},
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -182,6 +184,7 @@ class WhisperSpeech(
         var silenceMs = 0
         val started = SystemClock.elapsedRealtime()
         var lastDraftAt = started
+        var lastLeft = -1
         try {
             while (recording) {
                 val n = read(chunk)
@@ -223,11 +226,17 @@ class WhisperSpeech(
                     val end = samples.count
                     main.post { if (gap > end - RATE * 3 && gap > draftSnap) draftNow(gap, quiet = true) else draftNow(end, quiet = false) }
                 }
+                // Nearing the hard cap mid-ramble: count down so it never cuts Alan off without warning.
+                val left = (if (hold) MAX_HOLD_MS else MAX_LISTEN_MS) - elapsed
+                if ((hold || speechMs >= 200) && left <= WARN_MS) {
+                    val secs = ((left + 999) / 1000).toInt().coerceAtLeast(0)
+                    if (secs != lastLeft) { lastLeft = secs; main.post { onTimeLeft(secs) } }
+                }
                 when {
-                    hold -> if (elapsed > 120_000) recording = false // held: only letting go ends it
+                    hold -> if (elapsed > MAX_HOLD_MS) recording = false // held: only letting go ends it
                     speechMs >= 200 && silenceMs >= PAUSE_MS -> recording = false // a real pause: finished
                     speechMs < 200 && elapsed > 8000 -> recording = false // never started
-                    elapsed > 60_000 -> recording = false
+                    elapsed > MAX_LISTEN_MS -> recording = false
                 }
             }
         } finally {
@@ -473,6 +482,11 @@ class WhisperSpeech(
             val b = java.nio.ByteBuffer.wrap(bytes, 44, bytes.size - 44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
             return ShortArray((bytes.size - 44) / 2) { b.short }
         }
+
+        /** Hard caps on one turn (a noisy room can hide the closing pause), and the countdown before them. */
+        const val MAX_LISTEN_MS = 180_000L
+        const val MAX_HOLD_MS = 300_000L
+        const val WARN_MS = 15_000L
 
         /** Quiet that ends a turn when not holding the button: long enough for a breath mid-sentence. */
         const val PAUSE_MS = 2200

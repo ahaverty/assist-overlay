@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognitionService
 import android.speech.RecognizerIntent
@@ -13,6 +14,9 @@ import android.speech.SpeechRecognizer
 import android.util.Log
 
 private const val TAG = "AssistSpeech"
+
+/** Hard cap on one Google-only turn (Google usually ends it sooner, at a pause). */
+private const val MAX_MS = 90_000L
 
 /**
  * One listening turn on the phone's own speech recognizer (live words while Alan talks).
@@ -27,12 +31,22 @@ class Speech(
     private val onPartial: (String) -> Unit,
     private val onLevel: (Float) -> Unit,
     private val onDone: (text: String?, error: String?) -> Unit,
+    private val onTimeLeft: (Int) -> Unit = {},
 ) {
     private val main = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
     private var lastPartial = ""
     private var finished = false
     private val cap = Runnable { stop() }
+    private var capAt = 0L
+    private val countdown = object : Runnable {
+        override fun run() {
+            val left = capAt - SystemClock.elapsedRealtime()
+            if (recognizer == null || left <= 0) return
+            onTimeLeft(((left + 999) / 1000).toInt())
+            main.postDelayed(this, 1000)
+        }
+    }
 
     val active: Boolean get() = recognizer != null
 
@@ -90,7 +104,9 @@ class Speech(
             .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
             .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2000L)
             .putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2500L)
-        main.postDelayed(cap, 30_000)
+        capAt = SystemClock.elapsedRealtime() + MAX_MS
+        main.postDelayed(cap, MAX_MS)
+        main.postDelayed(countdown, MAX_MS - WhisperSpeech.WARN_MS)
         r.startListening(intent)
     }
 
@@ -118,6 +134,7 @@ class Speech(
 
     private fun release() {
         main.removeCallbacks(cap)
+        main.removeCallbacks(countdown)
         recognizer?.let {
             runCatching { it.cancel() }
             runCatching { it.destroy() }

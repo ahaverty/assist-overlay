@@ -410,6 +410,7 @@ private fun Header(
             val status = when (state.phase) {
                 Phase.Listening -> when {
                     state.transcribing -> "Transcribing…"
+                    state.stopsIn != null -> "Stopping in ${state.stopsIn} s, finish up…"
                     state.holding -> "Listening until you let go…"
                     else -> "Listening…"
                 }

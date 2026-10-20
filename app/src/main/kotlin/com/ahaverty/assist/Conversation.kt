@@ -62,6 +62,8 @@ data class UiState(
     val showHistory: Boolean = false,
     val attachment: Attachment? = null,
     val transcribing: Boolean = false,
+    /** Seconds until the mic's hard cap ends this turn (counts down over the last 15 s), or null. */
+    val stopsIn: Int? = null,
     val holding: Boolean = false,
     /** Photos waiting in the text bar to go with the next question. */
     val photos: List<Photo> = emptyList(),
@@ -139,6 +141,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         onPartial = { p -> onPartial(p) },
         onLevel = { l -> if (!bargeIn) _state.update { it.copy(level = l) } },
         onDone = { text, error -> onSpeechDone(text, error) },
+        onTimeLeft = { secs -> onTimeLeft(secs) },
     )
 
     /** On-phone Whisper for the question itself (Google stays for live words and talk-over). */
@@ -148,7 +151,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
         onPartial = { p -> onPartial(p) },
         onLevel = { l -> _state.update { it.copy(level = l) } },
         onDone = { text, error -> onSpeechDone(text, error) },
-        onTranscribing = { _state.update { it.copy(transcribing = true, level = 0f) } },
+        onTranscribing = { _state.update { it.copy(transcribing = true, level = 0f, stopsIn = null) } },
+        onTimeLeft = { secs -> onTimeLeft(secs) },
     )
 
     /** "google" or "small" (on-phone Whisper; an old "turbo" choice also means Whisper). */
@@ -586,7 +590,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         if (micBusy || _state.value.phase == Phase.Listening) {
             speech.cancel()
             whisper.cancel()
-            _state.update { it.copy(phase = if (it.phase == Phase.Listening) (if (busy) Phase.Thinking else Phase.Idle) else it.phase, partial = "", level = 0f, transcribing = false, holding = false) }
+            _state.update { it.copy(phase = if (it.phase == Phase.Listening) (if (busy) Phase.Thinking else Phase.Idle) else it.phase, partial = "", level = 0f, transcribing = false, holding = false, stopsIn = null) }
         }
     }
 
@@ -624,7 +628,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
             }
             return
         }
-        _state.update { it.copy(partial = "", level = 0f, transcribing = false, holding = false, phase = if (busy) Phase.Thinking else if (it.phase == Phase.Listening) Phase.Idle else it.phase) }
+        _state.update { it.copy(partial = "", level = 0f, transcribing = false, holding = false, stopsIn = null, phase = if (busy) Phase.Thinking else if (it.phase == Phase.Listening) Phase.Idle else it.phase) }
         val said = text?.let { withCarry(it) } ?: carry.takeIf { it.isNotEmpty() }
         carry = ""
         // A few words can pass for talk-over; the whole sentence being the reply's own voice means it was the echo.
@@ -636,6 +640,13 @@ class Conversation(private val app: Context, private val ha: Ha) {
             said != null -> send(said, spoken = true)
             error != null -> notice(error)
         }
+    }
+
+    /** The turn is nearing its hard cap: count it down on screen, with a buzz at the start and the last five seconds. */
+    private fun onTimeLeft(secs: Int) {
+        if (bargeIn || _state.value.phase != Phase.Listening) return
+        if (_state.value.stopsIn == null || secs <= 5) feedback.tick()
+        _state.update { it.copy(stopsIn = secs) }
     }
 
     /** The reply's own voice comes back through the mic, so only words that aren't in the reply count (see [Echo]). */

@@ -39,13 +39,16 @@ private const val LIVE = "AssistLive"
  */
 class WhisperSpeech(
     private val context: Context,
-    private val model: () -> Whisper.Model,
+    /** Whisper for drafts and the final text; null when [cloud] does the final text and there are no drafts. */
+    private val model: () -> Whisper.Model?,
     private val onPartial: (String) -> Unit,
     private val onLevel: (Float) -> Unit,
     private val onDone: (text: String?, error: String?) -> Unit,
     private val onTranscribing: () -> Unit = {},
     /** Seconds before the hard cap ends the turn, once a second for the last [WARN_MS]. */
     private val onTimeLeft: (Int) -> Unit = {},
+    /** True: the whole clip goes to Home Assistant's speech to text at the end (see [Ha.transcribe]). */
+    private val cloud: () -> Boolean = { false },
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -241,7 +244,8 @@ class WhisperSpeech(
             }
         } finally {
             close()
-            main.post { captured(speechMs >= 200) }
+            val spoke = speechMs
+            main.post { captured(spoke) }
         }
     }
 
@@ -250,6 +254,7 @@ class WhisperSpeech(
      * [quiet]: the audio ends between words, so the draft may become [settled].
      */
     private fun draftNow(end: Int, quiet: Boolean) {
+        if (model() == null) return
         if (finished || !recording || draftJob?.isActive == true) return
         if (lastSpeechSample <= draftSnap || end <= draftSnap) return // nothing said since the last draft
         val from = settledAt
@@ -288,10 +293,11 @@ class WhisperSpeech(
         val drafted = words(draft) - words(before)
         val google = words(googleAt(end)) - words(googleAt(from))
         fun short(text: String) = isShort(words(text), drafted, google)
-        val text = Whisper.transcribe(context, model(), audio, previous = before)
+        val m = model() ?: return null
+        val text = Whisper.transcribe(context, m, audio, previous = before)
         live("draft: $text")
         if (!short(text)) return text
-        val again = Whisper.transcribe(context, model(), audio, audioCtx = 0)
+        val again = Whisper.transcribe(context, m, audio, audioCtx = 0)
         live("too short (drafted $drafted, Google $google), again: $again")
         return again.takeUnless { short(it) }
     }
@@ -311,15 +317,16 @@ class WhisperSpeech(
     /** What Google showed when it had been given [end] samples. */
     private fun googleAt(end: Int) = heard.lastOrNull { it.first <= end }?.second ?: ""
 
-    private fun captured(heardSpeech: Boolean) {
+    private fun captured(speechMs: Int) {
         val fallback = display()
         closeSegment()
         onLevel(0f)
         if (finished) return
-        if (!heardSpeech && fallback.isBlank()) return finish(null, null)
+        if (speechMs < 200 && fallback.isBlank()) return finish(null, null)
         if (!replaying) keepTurn(samples.toShorts())
         val t = turn
         onTranscribing()
+        if (cloud()) return finishInCloud(speechMs, fallback, t)
         scope.launch {
             // Drafts are short now: let the running one finish, as it may settle more of the clip.
             draftJob?.join()
@@ -340,6 +347,26 @@ class WhisperSpeech(
             if (t != turn) return@launch
             val said = if (text == null) null else join(before, text)
             finish(said?.takeIf { it.isNotBlank() } ?: fallback.takeIf { it.isNotBlank() }, null)
+        }
+    }
+
+    /**
+     * The whole clip through Home Assistant's speech to text: one pass over everything said, so nothing is lost
+     * joining chunks. A bump or a breath (under [NOISE_MS] of sound that Google heard no words in) isn't sent:
+     * any recognizer can make words out of that. If HA can't be reached, Google's words go instead.
+     */
+    private fun finishInCloud(speechMs: Int, fallback: String, t: Int) {
+        if (fallback.isBlank() && speechMs < NOISE_MS) return finish(null, null)
+        val end = minOf(samples.count, maxOf(lastSpeechSample, lastSoundSample) + RATE / 2)
+        val pcm = samples.toShorts(end)
+        scope.launch {
+            val started = SystemClock.elapsedRealtime()
+            val text = runCatching { App.ha.transcribe(pcm) }
+                .onFailure { Log.w(TAG, "cloud speech to text failed", it) }
+                .getOrNull()?.trim()
+            live("cloud (${SystemClock.elapsedRealtime() - started} ms for ${pcm.size / RATE.toFloat()} s): $text")
+            if (t != turn) return@launch
+            finish(text?.takeUnless { isFiller(it) } ?: fallback.takeUnless { isFiller(it) }, null)
         }
     }
 
@@ -467,6 +494,13 @@ class WhisperSpeech(
     companion object {
         const val KEEP_TURNS = 8
 
+        /** Less sound than this, with no words from Google, is a bump or a breath (see [finishInCloud]). */
+        const val NOISE_MS = 1200
+
+        /** What speech models make of a cough or a rustle ("The and"): never a question on its own. */
+        fun isFiller(text: String) = text.lowercase().trim(' ', '.', ',', '!', '?') in
+            setOf("", "you", "the", "and", "the and", "a", "um", "uh", "hmm", "mm", "oh")
+
         fun writeWav(file: java.io.File, pcm: ShortArray) {
             val b = java.nio.ByteBuffer.allocate(44 + pcm.size * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
             b.put("RIFF".toByteArray()).putInt(36 + pcm.size * 2).put("WAVEfmt ".toByteArray())
@@ -547,7 +581,7 @@ private class ShortArrayBuilder {
         return FloatArray(maxOf(0, end - from)) { data[from + it] / 32768f }
     }
 
-    @Synchronized fun toShorts() = data.copyOf(size)
+    @Synchronized fun toShorts(to: Int = size) = data.copyOf(minOf(to, size))
 }
 
 /**

@@ -14,6 +14,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -110,6 +111,89 @@ class Ha(private val auth: Auth) {
         }
         val socket = ws.newWebSocket(Request.Builder().url(wsUrl).build(), listener)
         awaitClose { socket.cancel() }
+    }
+
+    /**
+     * Speech to text by the pipeline's own STT engine (e.g. OpenAI's gpt-4o-transcribe, with the accent and
+     * household words in its prompt): the whole clip (16 kHz mono 16-bit) goes up in one go after the turn ends.
+     * no_vad, so HA's own end-of-speech check (0.7 s of quiet, 15 s cap) can't cut a long ramble short.
+     */
+    suspend fun transcribe(pcm: ShortArray): String {
+        val base = auth.base()
+        val token = auth.accessToken(base)
+        val bytes = ByteArray(pcm.size * 2)
+        for (i in pcm.indices) {
+            bytes[2 * i] = (pcm[i].toInt() and 0xff).toByte()
+            bytes[2 * i + 1] = (pcm[i].toInt() shr 8).toByte()
+        }
+        // Upload plus the engine's own time (about 3 s for half a minute through OpenAI).
+        return withTimeout(20_000L + pcm.size / 16) {
+            suspendCancellableCoroutine { cont ->
+                val socket = ws.newWebSocket(
+                    Request.Builder().url(base.replaceFirst("http", "ws") + "/api/websocket").build(),
+                    object : WebSocketListener() {
+                        override fun onMessage(webSocket: WebSocket, text: String) {
+                            val msg = runCatching { JSONObject(text) }.getOrNull() ?: return
+                            when (msg.optString("type")) {
+                                "auth_required" -> webSocket.send(JSONObject().put("type", "auth").put("access_token", token).toString())
+                                "auth_invalid" -> fail(webSocket, "Home Assistant rejected the sign-in")
+                                "auth_ok" -> {
+                                    val run = JSONObject()
+                                        .put("id", 1)
+                                        .put("type", "assist_pipeline/run")
+                                        .put("start_stage", "stt")
+                                        .put("end_stage", "stt")
+                                        .put("input", JSONObject().put("sample_rate", 16_000).put("no_vad", true))
+                                        .put("timeout", 120)
+                                    Setup.pipelineId.takeIf { it.isNotEmpty() }?.let { run.put("pipeline", it) }
+                                    webSocket.send(run.toString())
+                                }
+                                "result" -> if (!msg.optBoolean("success", true)) {
+                                    fail(webSocket, msg.optJSONObject("error")?.optString("message") ?: "speech to text failed to start")
+                                }
+                                "event" -> {
+                                    val ev = msg.optJSONObject("event") ?: return
+                                    val data = ev.optJSONObject("data")
+                                    when (ev.optString("type")) {
+                                        "run-start" -> {
+                                            // Binary frames: the handler id byte, then audio; the id alone ends the stream.
+                                            val h = data?.optJSONObject("runner_data")?.optInt("stt_binary_handler_id", -1) ?: -1
+                                            if (h < 0) return fail(webSocket, "no audio handler")
+                                            val chunk = 32_000
+                                            var i = 0
+                                            while (i < bytes.size) {
+                                                val n = minOf(chunk, bytes.size - i)
+                                                webSocket.send(ByteString.of(h.toByte(), *bytes.copyOfRange(i, i + n)))
+                                                i += n
+                                            }
+                                            webSocket.send(ByteString.of(h.toByte()))
+                                        }
+                                        "stt-end" -> {
+                                            val said = data?.optJSONObject("stt_output")?.optString("text").orEmpty()
+                                            if (cont.isActive) cont.resumeWith(Result.success(said))
+                                            webSocket.close(1000, null)
+                                        }
+                                        "error" -> fail(webSocket, data?.optString("message") ?: "speech to text failed")
+                                        "run-end" -> fail(webSocket, "no transcript")
+                                    }
+                                }
+                            }
+                        }
+
+                        private fun fail(webSocket: WebSocket, why: String) {
+                            if (cont.isActive) cont.resumeWith(Result.failure(IOException(why)))
+                            webSocket.close(1000, null)
+                        }
+
+                        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                            auth.forgetBase()
+                            if (cont.isActive) cont.resumeWith(Result.failure(t))
+                        }
+                    },
+                )
+                cont.invokeOnCancellation { socket.cancel() }
+            }
+        }
     }
 
     /** GET an HA API path with the user's token (states, history, camera snapshots). */

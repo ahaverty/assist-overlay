@@ -213,7 +213,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Google (live words) or on-phone Whisper; the Whisper model downloads the first time. */
+    /** Google (live words), Home Assistant's speech to text, or on-phone Whisper (downloads the first time). */
     @Composable
     private fun SpeechPicker() {
         var engine by remember { mutableStateOf(App.convo.sttEngine) }
@@ -221,7 +221,10 @@ class MainActivity : ComponentActivity() {
         var error by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
         Text("Speech recognition", style = MaterialTheme.typography.titleMedium)
-        val options = listOf(Triple("google", "Google", "Live words, fastest. ${Speech.recognizerLabel(this@MainActivity)}")) +
+        val options = listOf(
+            Triple("google", "Google", "Live words, fastest. ${Speech.recognizerLabel(this@MainActivity)}"),
+            Triple("ha", "Home Assistant", "Most accurate. The recording goes to the pipeline's speech to text (set it to OpenAI, gpt-4o-transcribe, and put your accent and words in its prompt). Google still shows live words."),
+        ) +
             Whisper.Model.entries.map { m ->
                 val key = "small"
                 val state = when {
@@ -261,7 +264,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-        if (engine != "google") SettingField("whisper_words", "Words Whisper should know", "Names, places, brands")
+        if (engine == "small") SettingField("whisper_words", "Words Whisper should know", "Names, places, brands")
     }
 
     /** A text setting saved as you type (see [Setup]). */

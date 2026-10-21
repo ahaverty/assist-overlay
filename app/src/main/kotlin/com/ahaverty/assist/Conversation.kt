@@ -144,10 +144,14 @@ class Conversation(private val app: Context, private val ha: Ha) {
         onTimeLeft = { secs -> onTimeLeft(secs) },
     )
 
-    /** On-phone Whisper for the question itself (Google stays for live words and talk-over). */
+    /**
+     * The app's own recorder for the question itself, transcribed by on-phone Whisper or by Home Assistant's
+     * speech to text (Google stays for live words and talk-over).
+     */
     private val whisper = WhisperSpeech(
         app,
-        model = { whisperModel ?: Whisper.Model.SMALL },
+        model = { if (sttEngine == "ha") null else whisperModel ?: Whisper.Model.SMALL },
+        cloud = { sttEngine == "ha" },
         onPartial = { p -> onPartial(p) },
         onLevel = { l -> _state.update { it.copy(level = l) } },
         onDone = { text, error -> onSpeechDone(text, error) },
@@ -155,13 +159,16 @@ class Conversation(private val app: Context, private val ha: Ha) {
         onTimeLeft = { secs -> onTimeLeft(secs) },
     )
 
-    /** "google" or "small" (on-phone Whisper; an old "turbo" choice also means Whisper). */
+    /** "google", "ha" (Home Assistant's speech to text) or "small" (on-phone Whisper; an old "turbo" also means Whisper). */
     var sttEngine: String
-        get() = if (prefs.getString("stt", "google") == "google") "google" else "small"
+        get() = when (val v = prefs.getString("stt", "google")) { "google", "ha" -> v; else -> "small" }
         set(v) = prefs.edit().putString("stt", v).apply()
 
     private val whisperModel: Whisper.Model?
-        get() = (if (sttEngine == "google") null else Whisper.Model.SMALL)?.takeIf { Whisper.ready(app, it) }
+        get() = (if (sttEngine == "small") Whisper.Model.SMALL else null)?.takeIf { Whisper.ready(app, it) }
+
+    /** The question is recorded by the app itself (Whisper or Home Assistant) rather than by Google alone. */
+    private val ownRecorder get() = sttEngine == "ha" || whisperModel != null
 
     private val micBusy get() = speech.active || whisper.active
 
@@ -552,7 +559,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         if (carryingOn || carry.isNotEmpty()) feedback.tick() else feedback.listening()
         main.postDelayed({
             if (_state.value.holding && !micBusy) {
-                if (Whisper.ready(app, Whisper.Model.SMALL)) whisper.start(holdToTalk = true) else speech.start()
+                if (sttEngine == "ha" || Whisper.ready(app, Whisper.Model.SMALL)) whisper.start(holdToTalk = true) else speech.start()
             }
         }, if (carryingOn || carry.isNotEmpty()) 0L else 160L)
     }
@@ -579,7 +586,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         // A beat after the chime, so the chime isn't heard as speech.
         main.postDelayed({
             if (_state.value.phase == Phase.Listening && !micBusy) {
-                if (whisperModel != null) whisper.start() else speech.start()
+                if (ownRecorder) whisper.start() else speech.start()
             }
         }, 160)
     }

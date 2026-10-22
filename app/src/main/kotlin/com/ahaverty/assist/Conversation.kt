@@ -209,6 +209,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         stopListening()
         _state.update { if (it.attachment?.shared == false) it.copy(attachment = null) else it }
         pendingShot = null
+        pendingLabel = null
         if (_state.value.messages.isNotEmpty() && !tucked) postReopenNotice(alert = false)
         armIdleReset()
     }
@@ -281,15 +282,27 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     /** The screenshot Android hands over with the screen text; the two arrive in either order. */
     private var pendingShot: Bitmap? = null
+    /** The app on screen, kept even when it gave no text (Signal's chat list, pictures, maps) so its screenshot can still go. */
+    private var pendingLabel: String? = null
 
     fun setScreen(label: String, text: String) {
-        if (text.isBlank()) return
+        pendingLabel = label
+        if (text.isBlank() && pendingShot == null) return
         _state.update { if (it.attachment?.shared == true) it else it.copy(attachment = Attachment(label, text, shared = false, on = false, shot = pendingShot)) }
     }
 
     fun setScreenshot(shot: Bitmap?) {
         pendingShot = shot
-        _state.update { s -> s.attachment?.takeIf { !it.shared }?.let { s.copy(attachment = it.copy(shot = shot)) } ?: s }
+        _state.update { s ->
+            val a = s.attachment
+            when {
+                a?.shared == true -> s
+                a != null -> s.copy(attachment = a.copy(shot = shot))
+                // No screen text (yet, or at all): the picture alone is still the screen.
+                shot != null -> s.copy(attachment = Attachment(pendingLabel ?: "the app on screen", "", shared = false, on = false, shot = shot))
+                else -> s
+            }
+        }
     }
 
     /** The screenshot button: the screen goes with the next question, said or typed. Listens if the mic had stopped. */
@@ -446,7 +459,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
                 context += Setup.userName.ifEmpty { "The user" }.let { who ->
                     if (a.shared) "$who shared this from ${a.label}" else "On $who's screen, in ${a.label}"
                 } +
-                    ":\n" + a.text.take(6000)
+                    ":\n" + a.text.take(6000).ifBlank { "(the app gave no text, see the screenshot)" }
                 sentScreen = a.label
                 if (!a.shared) sentShot = a.shot
             }

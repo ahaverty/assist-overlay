@@ -3,6 +3,7 @@ package com.ahaverty.assist
 import android.app.assist.AssistStructure
 import android.content.Context
 import android.text.InputType
+import android.util.Log
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -134,20 +135,23 @@ class AssistSession(context: Context) :
 
     /** What the app underneath shows (when "use text from screen" is on); it goes along with questions about "this". */
     override fun onHandleAssist(state: AssistState) {
-        val structure = state.assistStructure ?: return
-        val pkg = structure.activityComponent?.packageName ?: return
-        if (pkg == context.packageName) return
+        val structure = state.assistStructure
+        val pkg = structure?.activityComponent?.packageName
+        Log.i("AssistScreen", "assist: pkg=$pkg windows=${structure?.windowNodeCount} focused=${state.isFocused}")
+        if (structure == null || pkg == null || pkg == context.packageName) return
         val label = runCatching {
             context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg, 0)).toString()
         }.getOrDefault(pkg)
         val lines = LinkedHashSet<String>()
         state.assistContent?.webUri?.let { lines += "Address: $it" }
         for (i in 0 until structure.windowNodeCount) collect(structure.getWindowNodeAt(i).rootViewNode, lines)
+        Log.i("AssistScreen", "screen text: $label, ${lines.size} lines")
         App.convo.setScreen(label, lines.joinToString("\n").take(8000))
     }
 
-    /** The picture behind the screenshot button's grab animation (Friday itself gets the screen text). */
+    /** The screenshot: the grab animation, and it goes to Friday with the screen text (or alone when the app gives none). */
     override fun onHandleScreenshot(screenshot: android.graphics.Bitmap?) {
+        Log.i("AssistScreen", "screenshot: ${screenshot?.let { "${it.width}x${it.height}" }}")
         App.convo.setScreenshot(screenshot)
     }
 

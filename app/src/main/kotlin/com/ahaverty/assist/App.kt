@@ -23,6 +23,9 @@ object Config {
     const val TUCKED_KEEP_MS = 30 * 60 * 1000L
     /** Grabbing the mic button this soon after a pause sent the question takes it back to carry on. */
     const val TAKE_BACK_MS = 6_000L
+    /** Tapping the text box keeps (finishes and sends) a turn this long with this many words; a shorter one is the TV or a false start and is dropped. */
+    const val NOTE_MS = 12_000L
+    const val NOTE_WORDS = 8
 
     const val CLAUDE_PACKAGE = "com.anthropic.claude"
     const val CHANNEL_REOPEN = "reopen"

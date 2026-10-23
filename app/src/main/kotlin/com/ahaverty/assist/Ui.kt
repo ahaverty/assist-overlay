@@ -443,7 +443,7 @@ private fun Messages(
 ) {
     val list = rememberLazyListState()
     val lastLen = state.messages.lastOrNull()?.text?.length ?: 0
-    LaunchedEffect(state.messages.size, lastLen, state.partial) {
+    LaunchedEffect(state.messages.size, lastLen, state.partial, state.queued.size) {
         val count = list.layoutInfo.totalItemsCount
         if (count > 0) list.animateScrollToItem(count - 1)
     }
@@ -477,6 +477,20 @@ private fun Messages(
         }
         if (state.partial.isNotEmpty()) {
             item(key = "partial") { UserBubble(state.partial, live = true) }
+        }
+        // Typed while the question above was still on its way: it goes once that is answered.
+        state.queued.forEachIndexed { i, q ->
+            item(key = "queued-$i") {
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+                    UserBubble(q, live = true)
+                    Text(
+                        "Sends when ${Setup.assistantName} has answered",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp, end = 6.dp),
+                    )
+                }
+            }
         }
         // While it listens (not held): throw away what it heard, or stop and fix the words before sending.
         if (state.phase == Phase.Listening && !state.holding) {
@@ -667,7 +681,7 @@ private fun InputRow(
                 if (screen == null) NoScreenButton(convo::noScreen)
                 else ScreenButton(screen, onGrab = { button -> convo.grabScreen(); onGrab?.invoke(button, screen.shot) }, onDrop = convo::toggleAttachment)
             },
-            // Tapping the box means typing: the mic stops at once (nothing heard is sent), so the TV can't go instead.
+            // Tapping the box means typing: a short turn stops unsent (so the TV can't go), a long voice note is finished and sent.
             modifier = Modifier.weight(1f).focusRequester(focus).onFocusChanged { if (it.isFocused) convo.typingStarted() },
             shape = RoundedCornerShape(26.dp),
             maxLines = 4,

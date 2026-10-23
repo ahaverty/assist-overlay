@@ -77,6 +77,8 @@ data class UiState(
     val focusInput: Int = 0,
     /** Bumped to take the cursor out of the text box and put the keyboard away (panel opened, question sent). */
     val blurInput: Int = 0,
+    /** Typed while the last question was still being transcribed or answered: sent as an addition once it is answered. */
+    val queued: List<String> = emptyList(),
 )
 
 /**
@@ -519,6 +521,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         carry = ""
         stopListening()
         feedback.nothing()
+        sendQueued()
     }
 
     /** Edit while listening: stop the mic and put what was heard in the text box to fix before sending. */
@@ -546,10 +549,24 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     fun sendTyped(text: String) {
         if (text.isBlank() && _state.value.photos.isEmpty()) return
+        val s = _state.value
+        // An addition typed while a voice note is still being transcribed or answered waits its turn instead of cancelling it.
+        if ((s.phase == Phase.Listening && s.transcribing) || busy) {
+            _state.update { it.copy(queued = it.queued + text.trim(), blurInput = it.blurInput + 1) }
+            return
+        }
         stopListening()
         stopAudio()
         _state.update { it.copy(blurInput = it.blurInput + 1) }
         send(text.trim(), spoken = false)
+    }
+
+    /** What was typed while the last question was on its way, now that it has been answered (or came to nothing). */
+    private fun sendQueued() {
+        val q = _state.value.queued
+        if (q.isEmpty() || busy || _state.value.phase == Phase.Listening) return
+        _state.update { it.copy(queued = emptyList()) }
+        send(q.filter { it.isNotBlank() }.joinToString("\n"), spoken = false)
     }
 
     /**
@@ -569,6 +586,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         stopListening()
         stopAudio()
         if (!hasMic()) return notice("Open the Assist app to allow the microphone.")
+        listenStarted = System.currentTimeMillis()
         _state.update { it.copy(phase = Phase.Listening, partial = carry, notice = null, holding = true, transcribing = false) }
         if (carryingOn || carry.isNotEmpty()) feedback.tick() else feedback.listening()
         main.postDelayed({
@@ -595,17 +613,34 @@ class Conversation(private val app: Context, private val ha: Ha) {
         _state.update { it.copy(transcribing = true, level = 0f, stopsIn = null) }
     }
 
-    /** The text box was tapped: drop the listening turn (unsent) so the mic isn't open, or sending the TV, behind the keyboard. */
+    /**
+     * The text box was tapped. A short listening turn is dropped unsent, so the mic isn't open (or sending the TV) behind
+     * the keyboard. A real voice note is never thrown away: one being transcribed carries on, and one still listening is
+     * finished and sent as if the mic was tapped, so whatever is typed goes after it as an addition.
+     */
     fun typingStarted() {
+        val s = _state.value
+        if (s.phase == Phase.Listening && s.transcribing) return
+        val words = s.partial.split(' ').count { it.isNotBlank() }
+        if (s.phase == Phase.Listening && !s.holding && words >= Config.NOTE_WORDS && System.currentTimeMillis() - listenStarted >= Config.NOTE_MS) {
+            stopTalking()
+            speech.stop()
+            whisper.stop()
+            return
+        }
         carry = ""
         stopListening()
     }
+
+    /** When the current listening turn began, to tell a voice note from a moment of TV when the text box is tapped. */
+    private var listenStarted = 0L
 
     private fun listen() {
         carry = ""
         if (!hasMic()) return notice("Open the Assist app to allow the microphone.")
         stopAudio()
         bargeIn = false
+        listenStarted = System.currentTimeMillis()
         _state.update { it.copy(phase = Phase.Listening, partial = "", notice = null, transcribing = false) }
         feedback.listening()
         // A beat after the chime, so the chime isn't heard as speech.
@@ -646,6 +681,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         // Alan is talking over the reply: stop it and carry on with this as his next question.
         bargeIn = false
         interrupted = true
+        listenStarted = System.currentTimeMillis()
         stopAudio()
         feedback.tick()
         _state.update { it.copy(phase = Phase.Listening, partial = p, notice = null, transcribing = false) }
@@ -666,12 +702,13 @@ class Conversation(private val app: Context, private val ha: Ha) {
         // A few words can pass for talk-over; the whole sentence being the reply's own voice means it was the echo.
         val echo = interrupted && said != null && Echo.isEcho(said, lastSpoken())
         interrupted = false
-        if (echo) return notice("That was my own voice, so I didn't send it.")
+        if (echo) return notice("That was my own voice, so I didn't send it.").also { sendQueued() }
         if (said != null) feedback.heard() else feedback.nothing()
         when {
             said != null -> send(said, spoken = true)
             error != null -> notice(error)
         }
+        sendQueued()
     }
 
     /** The turn is nearing its hard cap: count it down on screen, with a buzz at the start and the last five seconds. */
@@ -775,7 +812,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
                     // Tucked, the edge tab shows it; the sounding one still comes for a slow answer (phone in a pocket).
                     val slow = lastActivity - started > 15_000
                     if (!visible && (!tucked || slow)) postReopenNotice(alert = slow)
-                    if (voice == null) maybeContinue()
+                    if (_state.value.queued.isNotEmpty()) sendQueued() else if (voice == null) maybeContinue()
                 }
             }
         }

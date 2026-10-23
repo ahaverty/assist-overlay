@@ -482,6 +482,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     fun micPressed() {
         when (_state.value.phase) {
             Phase.Listening -> {
+                stopTalking()
                 speech.stop()
                 whisper.stop()
             }
@@ -568,7 +569,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         stopListening()
         stopAudio()
         if (!hasMic()) return notice("Open the Assist app to allow the microphone.")
-        _state.update { it.copy(phase = Phase.Listening, partial = carry, notice = null, holding = true) }
+        _state.update { it.copy(phase = Phase.Listening, partial = carry, notice = null, holding = true, transcribing = false) }
         if (carryingOn || carry.isNotEmpty()) feedback.tick() else feedback.listening()
         main.postDelayed({
             if (_state.value.holding && !micBusy) {
@@ -578,9 +579,20 @@ class Conversation(private val app: Context, private val ha: Ha) {
     }
 
     fun holdEnd() {
+        if (_state.value.phase == Phase.Listening) stopTalking()
         _state.update { it.copy(holding = false) }
         whisper.stop()
         speech.stop()
+    }
+
+    /**
+     * Done talking (mic tapped or let go): show at once that the mic is closed and the question is on its way,
+     * instead of the listening look lingering while the engine finishes (Google can take up to 1.5 s to answer
+     * a stop, Home Assistant a few seconds to transcribe).
+     */
+    private fun stopTalking() {
+        feedback.tick()
+        _state.update { it.copy(transcribing = true, level = 0f, stopsIn = null) }
     }
 
     /** The text box was tapped: drop the listening turn (unsent) so the mic isn't open, or sending the TV, behind the keyboard. */
@@ -594,7 +606,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         if (!hasMic()) return notice("Open the Assist app to allow the microphone.")
         stopAudio()
         bargeIn = false
-        _state.update { it.copy(phase = Phase.Listening, partial = "", notice = null) }
+        _state.update { it.copy(phase = Phase.Listening, partial = "", notice = null, transcribing = false) }
         feedback.listening()
         // A beat after the chime, so the chime isn't heard as speech.
         main.postDelayed({
@@ -636,7 +648,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         interrupted = true
         stopAudio()
         feedback.tick()
-        _state.update { it.copy(phase = Phase.Listening, partial = p, notice = null) }
+        _state.update { it.copy(phase = Phase.Listening, partial = p, notice = null, transcribing = false) }
     }
 
     private fun onSpeechDone(text: String?, error: String?) {

@@ -409,7 +409,7 @@ private fun Header(
             }
             val status = when (state.phase) {
                 Phase.Listening -> when {
-                    state.transcribing -> "Transcribing…"
+                    state.transcribing -> "Got it, sending…"
                     state.stopsIn != null -> "Stopping in ${state.stopsIn} s, finish up…"
                     state.holding -> "Listening until you let go…"
                     else -> "Listening…"
@@ -694,11 +694,13 @@ private fun InputRow(
 @Composable
 private fun MicButton(state: UiState, micDown: androidx.compose.runtime.MutableState<Boolean>, onClick: () -> Unit, onHoldStart: () -> Unit, onHoldEnd: () -> Unit) {
     val listening = state.phase == Phase.Listening
+    // Tapped or let go: the mic is closed and the question is being sent, so the button stops looking live.
+    val sending = listening && state.transcribing
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val ring by animateFloatAsState(if (listening) 1f + state.level * 0.35f else 1f, tween(90), label = "ring")
     val level = animateFloatAsState(if (listening && !state.transcribing) state.level else 0f, tween(80), label = "level")
     Box(contentAlignment = Alignment.Center, modifier = Modifier.size(64.dp)) {
-        AnimatedVisibility(listening, enter = fadeIn() + slideInVertically { it / 4 }, exit = fadeOut()) {
+        AnimatedVisibility(listening && !sending, enter = fadeIn() + slideInVertically { it / 4 }, exit = fadeOut()) {
             Box(contentAlignment = Alignment.Center) {
                 Ripples(MaterialTheme.colorScheme.primary)
                 Box(
@@ -708,8 +710,16 @@ private fun MicButton(state: UiState, micDown: androidx.compose.runtime.MutableS
             }
         }
         // Tap: talk (stops by itself at a pause). Hold: walkie-talkie, listens until you let go.
-        val bg = if (listening) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primaryContainer
-        val fg = if (listening) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onPrimaryContainer
+        val bg = when {
+            sending -> MaterialTheme.colorScheme.tertiaryContainer
+            listening -> MaterialTheme.colorScheme.primary
+            else -> MaterialTheme.colorScheme.primaryContainer
+        }
+        val fg = when {
+            sending -> MaterialTheme.colorScheme.onTertiaryContainer
+            listening -> MaterialTheme.colorScheme.onPrimary
+            else -> MaterialTheme.colorScheme.onPrimaryContainer
+        }
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier.size(if (state.holding) 64.dp else 56.dp).clip(CircleShape).background(bg)
@@ -737,7 +747,8 @@ private fun MicButton(state: UiState, micDown: androidx.compose.runtime.MutableS
                 },
         ) {
             androidx.compose.runtime.CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides fg) {
-            if (listening) VoiceBars(level, fg, Modifier.size(26.dp)) else Icon(
+            if (sending) CircularProgressIndicator(Modifier.size(26.dp), color = fg, strokeWidth = 3.dp)
+            else if (listening) VoiceBars(level, fg, Modifier.size(26.dp)) else Icon(
                 when (state.phase) {
                     Phase.Speaking -> Icons.Filled.Stop
                     else -> Icons.Filled.Mic

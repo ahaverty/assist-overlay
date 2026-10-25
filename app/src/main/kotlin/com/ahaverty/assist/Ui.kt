@@ -299,6 +299,7 @@ fun AssistPanel(
         val request = tuckTo?.value
         LaunchedEffect(request) {
             if (request == null || onTuck == null) return@LaunchedEffect
+            convo.stepAside()
             drag.animateTo((if (request) -1f else 1f) * widthPx * 1.1f, tween(160))
             onTuck(request)
             tuckTo.value = null
@@ -326,6 +327,7 @@ fun AssistPanel(
                             val flung = abs(v) > flingSpeed && abs(x) > flingMin && sign(v) == sign(x)
                             dragScope.launch {
                                 if (flung || abs(x) > widthPx * 0.4f) {
+                                    convo.stepAside()
                                     drag.animateTo(sign(x) * widthPx * 1.1f, tween(140))
                                     onTuck(x < 0)
                                 } else {

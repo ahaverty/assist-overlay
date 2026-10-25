@@ -245,12 +245,20 @@ class Conversation(private val app: Context, private val ha: Ha) {
     /** Tuck the panel into the left or right edge; the caller hides the panel. False if not allowed to draw over apps yet. */
     fun tuck(left: Boolean): Boolean {
         if (!EdgeTab.allowed(app)) return false
-        // Stepping aside means stop listening now, not once the window has finished hiding.
-        carry = ""
-        stopListening()
+        stepAside()
         tucked = true
         EdgeTab.show(app, left)
         return true
+    }
+
+    /**
+     * The panel is leaving for the edge (called as the finger lifts, before the slide): the mic goes off at once,
+     * and a reply still playing won't open it again afterwards, here or once the panel is back from the tab.
+     */
+    fun stepAside() {
+        carry = ""
+        continueConversation = false
+        stopListening()
     }
 
     /** The edge tab dragged onto its close target: done with this chat (it stays in the history menu). */

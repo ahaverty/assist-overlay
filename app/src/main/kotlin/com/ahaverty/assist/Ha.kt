@@ -244,6 +244,14 @@ class Ha(private val auth: Auth) {
 
     private fun String.nullless() = if (this == "null") "" else this
 
+    /** A line in Home Assistant's own log (Settings > System > Logs), for tracing on the phone without adb. */
+    suspend fun logLine(message: String) {
+        command(
+            JSONObject().put("type", "call_service").put("domain", "system_log").put("service", "write")
+                .put("service_data", JSONObject().put("message", message).put("logger", "assist_overlay.trace").put("level", "warning")),
+        )
+    }
+
     /** One websocket command; returns its result. */
     private suspend fun command(cmd: JSONObject): JSONObject {
         val base = auth.base()

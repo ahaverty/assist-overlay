@@ -201,7 +201,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         val stale = stale()
         tucked = false
         if (stale) quietOpen = false
-        Log.i("AssistTuck", "shown: quiet=$quietOpen stale=$stale phase=${_state.value.phase}")
+        trace("shown: quiet=$quietOpen aside=$asideTurn stale=$stale phase=${_state.value.phase} micOnOpen=${_state.value.micOnOpen}")
         EdgeTab.remove()
         cancelReopenNotice()
         if (stale) reset()
@@ -224,6 +224,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     fun onHidden() {
         visible = false
+        trace("hidden: tucked=$tucked quiet=$quietOpen phase=${_state.value.phase}")
         // Only a tuck keeps the next open quiet; closing or leaving any other way opens as usual next time.
         if (!tucked) quietOpen = false
         stopListening()
@@ -271,6 +272,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
      * and a reply still playing won't open it again afterwards, here or once the panel is back from the tab.
      */
     fun stepAside() {
+        trace("stepAside: phase=${_state.value.phase} busy=$busy")
         carry = ""
         quietOpen = true
         asideTurn = true
@@ -513,6 +515,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     // ---- input --------------------------------------------------------------------------------------------------------
 
     fun micPressed() {
+        trace("micPressed: phase=${_state.value.phase}")
         when (_state.value.phase) {
             Phase.Listening -> {
                 stopTalking()
@@ -606,6 +609,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
      * has just sent it (a few seconds ago, no answer yet), that question is taken back and carried on too.
      */
     fun holdStart() {
+        trace("holdStart: phase=${_state.value.phase}")
         val s = _state.value
         // Already mid-sentence: no chime (it sounds like a restart), just a tick, and the mic picks up at once.
         val carryingOn = s.phase == Phase.Listening && !s.holding
@@ -666,8 +670,24 @@ class Conversation(private val app: Context, private val ha: Ha) {
     /** When the current listening turn began, to tell a voice note from a moment of TV when the text box is tapped. */
     private var listenStarted = 0L
 
+    /**
+     * Temporary (25 Oct 2026): hunting what starts the mic when the panel comes back from the edge tab. Each line
+     * goes to logcat (AssistTuck) and Home Assistant's log (logger assist_overlay.trace), since the phone is off adb.
+     */
+    private fun trace(msg: String) {
+        Log.i("AssistTuck", msg)
+        val line = "${appVersion} t=${System.currentTimeMillis() % 100_000} $msg"
+        scope.launch { runCatching { ha.logLine(line) } }
+    }
+
+    private val appVersion by lazy { runCatching { app.packageManager.getPackageInfo(app.packageName, 0).versionName }.getOrNull() }
+
+    /** The app's own frames that led here (line numbers survive R8; names may not). */
+    private fun caller() = Throwable().stackTrace.drop(2).filter { it.className.startsWith("com.ahaverty") }.take(6)
+        .joinToString(" < ") { "${it.className.substringAfterLast('.')}.${it.methodName}:${it.lineNumber}" }
+
     private fun listen() {
-        Log.i("AssistTuck", "listen: quiet=$quietOpen visible=$visible", Throwable("listen"))
+        trace("listen: quiet=$quietOpen aside=$asideTurn visible=$visible phase=${_state.value.phase} from ${caller()}")
         carry = ""
         if (!hasMic()) return notice("Open the Assist app to allow the microphone.")
         stopAudio()
@@ -756,6 +776,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private fun lastSpoken() = speakable(_state.value.messages.lastOrNull { !it.fromUser }?.text.orEmpty())
 
     private fun startBargeIn() {
+        trace("bargeIn: enabled=$bargeInEnabled aside=$asideTurn visible=$visible")
         if (!bargeInEnabled || asideTurn || !visible || !hasMic() || micBusy) return
         bargeIn = true
         speech.start()
@@ -941,7 +962,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private fun edit(id: Long, f: (Msg) -> Msg) = _state.update { s -> s.copy(messages = s.messages.map { if (it.id == id) f(it) else it }) }
 
     private fun maybeContinue() {
-        Log.i("AssistTuck", "maybeContinue: continue=$continueConversation aside=$asideTurn visible=$visible")
+        trace("maybeContinue: continue=$continueConversation aside=$asideTurn visible=$visible phase=${_state.value.phase}")
         if (continueConversation && !asideTurn && lastTurnWasVoice && visible && _state.value.phase == Phase.Idle && _state.value.followUps) {
             continueConversation = false
             listen()

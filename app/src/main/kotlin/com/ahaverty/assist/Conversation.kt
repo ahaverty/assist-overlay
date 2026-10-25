@@ -189,6 +189,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         visible = true
         main.removeCallbacks(idleCheck)
         val stale = stale()
+        val wasTucked = tucked
         tucked = false
         EdgeTab.remove()
         cancelReopenNotice()
@@ -200,6 +201,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
             !hasMic() -> notice("Open the Assist app to allow the microphone.")
             _state.value.attachment?.shared == true -> Unit // something was shared in: let Alan ask about it
             _state.value.phase != Phase.Idle -> Unit
+            // Back from the edge tab: Alan put the chat aside on purpose, so the mic waits for him.
+            wasTucked && !stale -> Unit
             _state.value.micOnOpen -> listen()
         }
         Updater.checkInBackground(app)
@@ -242,6 +245,9 @@ class Conversation(private val app: Context, private val ha: Ha) {
     /** Tuck the panel into the left or right edge; the caller hides the panel. False if not allowed to draw over apps yet. */
     fun tuck(left: Boolean): Boolean {
         if (!EdgeTab.allowed(app)) return false
+        // Stepping aside means stop listening now, not once the window has finished hiding.
+        carry = ""
+        stopListening()
         tucked = true
         EdgeTab.show(app, left)
         return true

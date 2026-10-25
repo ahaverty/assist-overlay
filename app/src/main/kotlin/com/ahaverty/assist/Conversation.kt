@@ -200,7 +200,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
         main.removeCallbacks(idleCheck)
         val stale = stale()
         tucked = false
-        if (stale) quietOpen = false
+        // Not cleared when the chat has gone stale: an empty or old chat counts as stale, and the fresh one that
+        // replaces it still came from the tab, so it waits for the mic to be tapped too.
         trace("shown: quiet=$quietOpen aside=$asideTurn stale=$stale phase=${_state.value.phase} micOnOpen=${_state.value.micOnOpen}")
         EdgeTab.remove()
         cancelReopenNotice()
@@ -245,6 +246,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         if (stale()) {
             if (tucked) EdgeTab.remove()
             tucked = false
+            quietOpen = false
             reset()
         } else {
             armIdleReset()

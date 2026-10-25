@@ -125,6 +125,12 @@ class Conversation(private val app: Context, private val ha: Ha) {
 
     /** Set when the panel steps aside: the next open (from the tab, or a long-press) doesn't start the mic by itself. */
     private var quietOpen = false
+
+    /**
+     * Set when the panel steps aside, until the next question: the reply already on its way (Friday still thinking
+     * when Alan swiped) must not open the mic when it ends or while it is spoken, even though it asks to carry on.
+     */
+    private var asideTurn = false
     private var lastTurnWasVoice = false
     private var continueConversation = false
     private var nextId = 1L
@@ -267,6 +273,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     fun stepAside() {
         carry = ""
         quietOpen = true
+        asideTurn = true
         continueConversation = false
         stopListening()
     }
@@ -749,7 +756,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private fun lastSpoken() = speakable(_state.value.messages.lastOrNull { !it.fromUser }?.text.orEmpty())
 
     private fun startBargeIn() {
-        if (!bargeInEnabled || !visible || !hasMic() || micBusy) return
+        if (!bargeInEnabled || asideTurn || !visible || !hasMic() || micBusy) return
         bargeIn = true
         speech.start()
     }
@@ -763,6 +770,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
         lastActivity = started
         lastTurnWasVoice = spoken
         continueConversation = false
+        asideTurn = false
         val replyId = nextId + 1
         val photos = _state.value.photos
         val shot = sentShot
@@ -933,7 +941,8 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private fun edit(id: Long, f: (Msg) -> Msg) = _state.update { s -> s.copy(messages = s.messages.map { if (it.id == id) f(it) else it }) }
 
     private fun maybeContinue() {
-        if (continueConversation && lastTurnWasVoice && visible && _state.value.phase == Phase.Idle && _state.value.followUps) {
+        Log.i("AssistTuck", "maybeContinue: continue=$continueConversation aside=$asideTurn visible=$visible")
+        if (continueConversation && !asideTurn && lastTurnWasVoice && visible && _state.value.phase == Phase.Idle && _state.value.followUps) {
             continueConversation = false
             listen()
         }

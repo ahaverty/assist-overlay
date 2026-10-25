@@ -12,6 +12,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.util.Log
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -121,6 +122,9 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private var visible = false
     /** The panel is tucked into the screen edge (EdgeTab): the conversation is still very much on. */
     private var tucked = false
+
+    /** Set when the panel steps aside: the next open (from the tab, or a long-press) doesn't start the mic by itself. */
+    private var quietOpen = false
     private var lastTurnWasVoice = false
     private var continueConversation = false
     private var nextId = 1L
@@ -189,8 +193,9 @@ class Conversation(private val app: Context, private val ha: Ha) {
         visible = true
         main.removeCallbacks(idleCheck)
         val stale = stale()
-        val wasTucked = tucked
         tucked = false
+        if (stale) quietOpen = false
+        Log.i("AssistTuck", "shown: quiet=$quietOpen stale=$stale phase=${_state.value.phase}")
         EdgeTab.remove()
         cancelReopenNotice()
         if (stale) reset()
@@ -202,15 +207,19 @@ class Conversation(private val app: Context, private val ha: Ha) {
             _state.value.attachment?.shared == true -> Unit // something was shared in: let Alan ask about it
             _state.value.phase != Phase.Idle -> Unit
             // Back from the edge tab: Alan put the chat aside on purpose, so the mic waits for him.
-            wasTucked && !stale -> Unit
+            quietOpen -> Unit
             _state.value.micOnOpen -> listen()
         }
+        // Held for a moment, not just this one call: Android can show the session twice in a row.
+        if (quietOpen) main.postDelayed({ if (visible) quietOpen = false }, 3_000)
         Updater.checkInBackground(app)
         whisperModel?.let { m -> scope.launch { runCatching { Whisper.preload(app, m) } } }
     }
 
     fun onHidden() {
         visible = false
+        // Only a tuck keeps the next open quiet; closing or leaving any other way opens as usual next time.
+        if (!tucked) quietOpen = false
         stopListening()
         _state.update { if (it.attachment?.shared == false) it.copy(attachment = null) else it }
         pendingShot = null
@@ -257,6 +266,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
      */
     fun stepAside() {
         carry = ""
+        quietOpen = true
         continueConversation = false
         stopListening()
     }
@@ -650,6 +660,7 @@ class Conversation(private val app: Context, private val ha: Ha) {
     private var listenStarted = 0L
 
     private fun listen() {
+        Log.i("AssistTuck", "listen: quiet=$quietOpen visible=$visible", Throwable("listen"))
         carry = ""
         if (!hasMic()) return notice("Open the Assist app to allow the microphone.")
         stopAudio()

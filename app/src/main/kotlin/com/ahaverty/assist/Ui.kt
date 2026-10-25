@@ -26,6 +26,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.runtime.MutableState
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -145,16 +149,25 @@ fun AssistTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = scheme, content = content)
 }
 
-/** Full-screen overlay: a light scrim that does nothing when touched, and the panel at the bottom. */
+/**
+ * Full-screen overlay: a light scrim and the panel at the bottom. Touching the scrim tucks the panel into
+ * the nearer edge (the chat carries on), since a tap up there means Alan wants the app underneath; a pull
+ * down from the very top also opens the notification shade ([onShade]), which the window otherwise covers.
+ */
 @Composable
 fun AssistOverlay(
     convo: Conversation,
     onClose: () -> Unit,
     onTuck: (left: Boolean) -> Unit,
+    onShade: () -> Unit,
     onOpenClaude: () -> Unit,
     onOpenUrl: (String) -> Unit,
 ) {
     var overlay by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var panelBox by remember { mutableStateOf<Rect?>(null) }
+    val tuckTo = remember { mutableStateOf<Boolean?>(null) }
+    val density = LocalDensity.current
+    val topZone = WindowInsets.statusBars.getTop(density) + with(density) { 24.dp.toPx() }
     // The screenshot button's grab: the screen shrinks from full size into the button's spot in the text bar.
     val grab = remember { Animatable(1f) }
     var grabFrom by remember { mutableStateOf<Rect?>(null) }
@@ -167,17 +180,42 @@ fun AssistOverlay(
             // AssistSession undoes the system's pan of the window: imePadding() below already clears the keyboard.
             .onGloballyPositioned { overlay = it }
             .background(Color.Black.copy(alpha = 0.32f))
-            // Swallow taps on the scrim: dismissing is only ever deliberate.
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+            // Touches on the scrim tuck the panel (never close it). The panel's own blank space passes
+            // touches through unconsumed, so anything that starts inside its bounds is left alone.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    if (panelBox?.contains(down.position) != false || tuckTo.value != null) return@awaitEachGesture
+                    down.consume()
+                    val left = down.position.x < size.width / 2f
+                    var moved = Offset.Zero
+                    while (true) {
+                        val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                        moved += change.positionChange()
+                        change.consume()
+                        if (down.position.y < topZone && moved.y > viewConfiguration.touchSlop) {
+                            tuckTo.value = false
+                            onShade()
+                            break
+                        }
+                        if (!change.pressed) {
+                            tuckTo.value = left
+                            break
+                        }
+                    }
+                }
+            },
         contentAlignment = Alignment.BottomCenter,
     ) {
         AssistPanel(
             convo = convo,
             onClose = onClose,
             onTuck = onTuck,
+            tuckTo = tuckTo,
             onOpenClaude = onOpenClaude,
             onOpenUrl = onOpenUrl,
-            modifier = Modifier.navigationBarsPadding().imePadding(),
+            modifier = Modifier.navigationBarsPadding().imePadding()
+                .onGloballyPositioned { p -> overlay?.takeIf { it.isAttached }?.let { panelBox = it.localBoundingBoxOf(p) } },
             onGrab = { button, shot ->
                 val root = overlay
                 if (root != null && root.isAttached && button.isAttached) {
@@ -237,7 +275,8 @@ fun AssistPanel(
     onOpenUrl: (String) -> Unit,
     modifier: Modifier = Modifier,
     onTuck: ((left: Boolean) -> Unit)? = null,
-    onGrab: ((button: LayoutCoordinates, shot: android.graphics.Bitmap?) -> Unit)? = null,
+    tuckTo: MutableState<Boolean?>? = null,
+    onGrab:((button: LayoutCoordinates, shot: android.graphics.Bitmap?) -> Unit)? = null,
 ) {
     val state by convo.state.collectAsState()
     BoxWithConstraints(modifier.fillMaxWidth()) {
@@ -255,6 +294,14 @@ fun AssistPanel(
         LifecycleResumeEffect(Unit) {
             dragScope.launch { drag.snapTo(0f) }
             onPauseOrDispose { }
+        }
+        // A tuck asked from outside the panel (touching the scrim): slide off like a fling, then tuck.
+        val request = tuckTo?.value
+        LaunchedEffect(request) {
+            if (request == null || onTuck == null) return@LaunchedEffect
+            drag.animateTo((if (request) -1f else 1f) * widthPx * 1.1f, tween(160))
+            onTuck(request)
+            tuckTo.value = null
         }
         val swipeToTuck = if (onTuck == null) Modifier else Modifier.pointerInput(onTuck) {
             val tracker = VelocityTracker()

@@ -7,6 +7,8 @@ import android.util.Log
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.service.voice.VoiceInteractionSession
 import android.view.View
 import android.view.WindowManager
@@ -30,8 +32,9 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 
 /**
  * The overlay itself: drawn in the assistant window over whatever app is open (no activity of our own),
- * so it appears instantly and the app underneath stays put. Nothing dismisses it by swiping or tapping
- * outside; only the close button, Back, or leaving for another app hides it, and the conversation stays.
+ * so it appears instantly and the app underneath stays put. Nothing closes it by swiping or tapping
+ * outside: that tucks it into the screen edge. Only the close button, Back, or leaving for another app
+ * hides it, and the conversation stays.
  */
 class AssistSession(context: Context) :
     VoiceInteractionSession(context), LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner {
@@ -100,6 +103,17 @@ class AssistSession(context: Context) :
                             EdgeTab.askPermission(context)
                             hide()
                         }
+                    },
+                    onShade = {
+                        // The assistant window sits above the status bar, so the pull never reached it.
+                        // Open the shade once the panel has tucked away (a hidden API; if it is refused,
+                        // the panel is still out of the way for a second pull).
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            runCatching {
+                                val bar = context.getSystemService("statusbar")
+                                bar.javaClass.getMethod("expandNotificationsPanel").invoke(bar)
+                            }.onFailure { Log.w("AssistShade", "couldn't open the shade", it) }
+                        }, 450)
                     },
                     onOpenClaude = {
                         App.convo.openInClaude(context)?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
